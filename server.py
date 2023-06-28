@@ -1,10 +1,17 @@
 import socket
 import threading
 import json
+from Crypto.Cipher import DES3, AES, PKCS1_OAEP
+from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
 
 USERS_FILE = "users.json"  # JSON file to store registered users
 connected_clients = {}
 groups = {}
+SERVER_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
+SERVER_PUBLIC_KEY = SERVER_PRIVATE_KEY.publickey()  # Get the corresponding public key
+AES_KEY_PASSWORD = b'ServerPrivateKey'  # Private key for encryption
 
 def load_users():
     try:
@@ -18,11 +25,26 @@ def save_users(users):
     with open(USERS_FILE, "w") as file:
         json.dump(users, file)
 
+def encrypt_password(password):
+    cipher = AES.new(AES_KEY_PASSWORD, AES.MODE_ECB)
+    encrypted_password = cipher.encrypt(pad(password.encode(), AES.block_size))
+    return encrypted_password
+
+def decrypt_password(encrypted_password):
+    cipher = AES.new(AES_KEY_PASSWORD, AES.MODE_ECB)
+    decrypted_password = unpad(cipher.decrypt(encrypted_password), AES.block_size)
+    return decrypted_password.decode()
+
 users = load_users()
 
 def handle_client(conn, client_address):
+    conn.send(SERVER_PUBLIC_KEY.export_key())
+    cipher_server = PKCS1_OAEP.new(SERVER_PRIVATE_KEY)
+    client_public_key = RSA.import_key(conn.recv(1024))
+    cipher_client = PKCS1_OAEP.new(client_public_key)
+
     while True:
-        data = conn.recv(1024).decode()
+        data = cipher_server.decrypt(conn.recv(1024)).decode()
         if not data:
             break
         
@@ -35,21 +57,28 @@ def handle_client(conn, client_address):
             if username in users:
                 response = "Username already exists. Please choose a different username."
             else:
-                users[username] = password
+                encrypted_password = str(encrypt_password(password))
+                users[username] = encrypted_password
                 save_users(users)
                 response = "Registration successful. You can now login."
         elif command == "login":
             username, password = content.split(",")
-            if username in users and users[username] == password:
+            encrypted_password = encrypt_password(password)
+            if username in users and users[username] == str(encrypted_password):
                 response = "Login successful. Welcome, {}!".format(username)
-                connected_clients[username] = conn
+                connected_clients[username] = {
+                    "conn": conn,
+                    "cipher": cipher_client
+                }
             else:
                 response = "Invalid username or password. Please try again."
         elif command == "message":
             sender, receiver, message = content.split(",", 2)
             if sender in connected_clients and receiver in connected_clients:
-                receiver_conn = connected_clients[receiver]
-                receiver_conn.send(f"Message from {sender}: {message}".encode())
+                receiver_conn = connected_clients[receiver]["conn"]
+                receiver_cipher = connected_clients[receiver]["cipher"]
+                message = f"Message from {sender}: {message}".encode()
+                receiver_conn.send(receiver_cipher.encrypt(message))
                 response = "Message sent successfully."
             else:
                 response = "Sender or receiver is not logged in."
@@ -66,9 +95,11 @@ def handle_client(conn, client_address):
             group_name, username, message = content.split(",", 2)
             if group_name in groups and username in groups[group_name]["members"]:
                 for member in groups[group_name]["members"]:
-                    if member in connected_clients:
-                        member_conn = connected_clients[member]
-                        member_conn.send(f"Group '{group_name}': message from {username}: {message}".encode())
+                    if member in connected_clients and member != username:
+                        member_conn = connected_clients[member]["conn"]
+                        member_cipher = connected_clients[member]["cipher"]
+                        message = f"Group '{group_name}': message from {username}: {message}".encode()
+                        member_conn.send(member_cipher.encrypt(message))
                 response = "Message sent successfully."
             else:
                 response = "You are not a member of the group or the group does not exist."
@@ -78,8 +109,10 @@ def handle_client(conn, client_address):
                 groups[group_name]["members"].append(new_member)
                 for member in groups[group_name]["members"]:
                     if member in connected_clients:
-                        member_conn = connected_clients[member]
-                        member_conn.send(f"Group '{group_name}': Member {new_member} added to group".encode())
+                        member_conn = connected_clients[member]["conn"]
+                        member_cipher = connected_clients[member]["cipher"]
+                        message = f"Group '{group_name}': Member {new_member} added to group".encode()
+                        member_conn.send(member_cipher.encrypt(message))
                 response = "Member added successfully".format(new_member, group_name)
             else:
                 response = "You are not a member of the group or the group or username does not exist."
@@ -93,9 +126,9 @@ def handle_client(conn, client_address):
                 groups[group_name]["admin"].append(new_admin)
                 response = "Member '{}' is now an admin of group '{}'.".format(new_admin, group_name)
             else:
-                response = "You are not a member of the group or the group or username does not exist."
+                response = "You are not an admin or a member of the group or the group or username does not exist."
 
-        conn.send(response.encode())
+        conn.send(cipher_client.encrypt(response.encode()))
 
     conn.close()
 

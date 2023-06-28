@@ -1,7 +1,11 @@
 import socket
 import threading
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
 
 user_name = ""
+CLIENT_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
+CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding public key
 
 def client_program():
     host = socket.gethostname()  # as both code is running on same pc
@@ -10,9 +14,15 @@ def client_program():
     client_socket = socket.socket()  # instantiate
     client_socket.connect((host, port))  # connect to the server
     print("Connected to the server.")
+    
+    server_public_key = RSA.import_key(client_socket.recv(1024))
+    cipher_server = PKCS1_OAEP.new(server_public_key)
+    client_socket.send(CLIENT_PUBLIC_KEY.export_key())
+    cipher_client = PKCS1_OAEP.new(CLIENT_PRIVATE_KEY)
 
     def send_message():
         global user_name
+
         print("Enter a message (or 'exit' to quit):")
 
         while True:
@@ -70,14 +80,15 @@ def client_program():
                 print("Invalid command. Please try again.")
                 continue
             
-            client_socket.send(message.encode())
+            encrypted_message = cipher_server.encrypt(message.encode())
+            client_socket.send(encrypted_message)
 
             if message.lower() == 'exit':
                 break
 
     def receive_message():
         while True:
-            response = client_socket.recv(1024).decode()
+            response = cipher_client.decrypt(client_socket.recv(1024)).decode()
             print("Server: " + response)
 
     send_thread = threading.Thread(target=send_message)
