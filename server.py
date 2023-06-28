@@ -1,6 +1,7 @@
 import socket
 import threading
 import json
+import hmac
 from Crypto.Cipher import DES3, AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
@@ -35,6 +36,16 @@ def decrypt_password(encrypted_password):
     decrypted_password = unpad(cipher.decrypt(encrypted_password), AES.block_size)
     return decrypted_password.decode()
 
+def secure_send_message(conn, cipher, message):
+    hmac_digest = hmac.new(b'', message.encode(), digestmod='sha256').digest()
+    data = {
+        'hmac': hmac_digest.hex(),
+        'message': message
+    }
+    json_data = json.dumps(data).encode()
+    
+    conn.send(cipher.encrypt(json_data))
+
 users = load_users()
 
 def handle_client(conn, client_address):
@@ -44,13 +55,19 @@ def handle_client(conn, client_address):
     cipher_client = PKCS1_OAEP.new(client_public_key)
 
     while True:
-        data = cipher_server.decrypt(conn.recv(1024)).decode()
-        if not data:
-            break
-        
-        print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + data)
-        
-        command, content = data.split(":", 1)
+        decrypted_data = cipher_server.decrypt(conn.recv(1024))
+        data = json.loads(decrypted_data.decode())
+        received_hmac = bytes.fromhex(data['hmac'])
+        received_message = data['message']
+        hmac_digest = hmac.new(b'', received_message.encode(), digestmod='sha256').digest()
+
+        if hmac.compare_digest(received_hmac, hmac_digest):
+            print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + received_message)
+        else:
+            print('HMAC verification failed!')
+            continue
+
+        command, content = received_message.split(":", 1)
 
         if command == "register":
             username, password = content.split(",")
@@ -77,8 +94,8 @@ def handle_client(conn, client_address):
             if sender in connected_clients and receiver in connected_clients:
                 receiver_conn = connected_clients[receiver]["conn"]
                 receiver_cipher = connected_clients[receiver]["cipher"]
-                message = f"Message from {sender}: {message}".encode()
-                receiver_conn.send(receiver_cipher.encrypt(message))
+                message = f"Message from {sender}: {message}"
+                secure_send_message(receiver_conn, receiver_cipher, message)
                 response = "Message sent successfully."
             else:
                 response = "Sender or receiver is not logged in."
@@ -98,8 +115,8 @@ def handle_client(conn, client_address):
                     if member in connected_clients and member != username:
                         member_conn = connected_clients[member]["conn"]
                         member_cipher = connected_clients[member]["cipher"]
-                        message = f"Group '{group_name}': message from {username}: {message}".encode()
-                        member_conn.send(member_cipher.encrypt(message))
+                        message = f"Group '{group_name}': message from {username}: {message}"
+                        secure_send_message(member_conn, member_cipher, message)
                 response = "Message sent successfully."
             else:
                 response = "You are not a member of the group or the group does not exist."
@@ -111,8 +128,8 @@ def handle_client(conn, client_address):
                     if member in connected_clients:
                         member_conn = connected_clients[member]["conn"]
                         member_cipher = connected_clients[member]["cipher"]
-                        message = f"Group '{group_name}': Member {new_member} added to group".encode()
-                        member_conn.send(member_cipher.encrypt(message))
+                        message = f"Group '{group_name}': Member {new_member} added to group"
+                        secure_send_message(member_conn, member_cipher, message)
                 response = "Member added successfully".format(new_member, group_name)
             else:
                 response = "You are not a member of the group or the group or username does not exist."
@@ -127,8 +144,9 @@ def handle_client(conn, client_address):
                 response = "Member '{}' is now an admin of group '{}'.".format(new_admin, group_name)
             else:
                 response = "You are not an admin or a member of the group or the group or username does not exist."
-
-        conn.send(cipher_client.encrypt(response.encode()))
+        
+        secure_send_message(conn, cipher_client, response)
+        
 
     conn.close()
 

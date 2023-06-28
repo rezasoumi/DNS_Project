@@ -1,11 +1,23 @@
 import socket
 import threading
+import hmac
+import json
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 
 user_name = ""
 CLIENT_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
 CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding public key
+
+def secure_send_message(conn, cipher, message):
+    hmac_digest = hmac.new(b'', message.encode(), digestmod='sha256').digest()
+    data = {
+        'hmac': hmac_digest.hex(),
+        'message': message
+    }
+    json_data = json.dumps(data).encode()
+    
+    conn.send(cipher.encrypt(json_data))
 
 def client_program():
     host = socket.gethostname()  # as both code is running on same pc
@@ -31,8 +43,10 @@ def client_program():
             if command == "exit":
                 client_socket.send("exit".encode())
                 break
-
-            if command == "register":
+            elif command == "help":
+                print("Commands:\n--register\n--login\n--message (sending message to another person)\n--create_group\n--send_group_message\n--add_group_member\n--add_group_admin")
+                continue
+            elif command == "register":
                 print("Enter username:")
                 username = input()
                 print("Enter password:")
@@ -80,16 +94,23 @@ def client_program():
                 print("Invalid command. Please try again.")
                 continue
             
-            encrypted_message = cipher_server.encrypt(message.encode())
-            client_socket.send(encrypted_message)
+            secure_send_message(client_socket, cipher_server, message)
 
             if message.lower() == 'exit':
                 break
 
     def receive_message():
         while True:
-            response = cipher_client.decrypt(client_socket.recv(1024)).decode()
-            print("Server: " + response)
+            decrypted_data = cipher_client.decrypt(client_socket.recv(1024))
+            data = json.loads(decrypted_data.decode())
+            received_hmac = bytes.fromhex(data['hmac'])
+            received_message = data['message']
+            hmac_digest = hmac.new(b'', received_message.encode(), digestmod='sha256').digest()
+
+            if hmac.compare_digest(received_hmac, hmac_digest):
+                print('Received message:', received_message)
+            else:
+                print('HMAC verification failed!')
 
     send_thread = threading.Thread(target=send_message)
     receive_thread = threading.Thread(target=receive_message)
