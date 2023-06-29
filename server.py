@@ -3,12 +3,16 @@ import threading
 import json
 import hmac
 import os
+import base64
 from Crypto.Cipher import DES3, AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Protocol.KDF import PBKDF2
 import hashlib
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import dh
+from cryptography.hazmat.primitives import serialization
 
 def generate_pub_prv_key():
     global SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
@@ -64,6 +68,8 @@ def load_users():
         users = {}
     return users
 
+users = load_users()
+
 def save_users(users):
     with open(USERS_FILE, "w") as file:
         json.dump(users, file)
@@ -78,12 +84,9 @@ def decrypt_password(encrypted_password):
     decrypted_password = unpad(cipher.decrypt(encrypted_password), AES.block_size)
     return decrypted_password.decode()
 
-def secure_send_message(conn, cipher, message):
-    hmac_digest = hmac.new(b'', message.encode(), digestmod='sha256').digest()
-    data = {
-        'hmac': hmac_digest.hex(),
-        'message': message
-    }
+def secure_send_message(conn, cipher, data):
+    hmac_digest = hmac.new(b'', data["type"].encode(), digestmod='sha256').digest()
+    data['hmac'] = hmac_digest.hex()
     json_data = json.dumps(data).encode()
     
     conn.send(cipher.encrypt(json_data))
@@ -109,8 +112,6 @@ def exchange_public_key(conn, client_address):
 
     return cipher_server, cipher_client, client_public_key, certificate_client
 
-users = load_users()
-
 def handle_client(conn, client_address):
     cipher_server = None
     while cipher_server == None:
@@ -120,35 +121,40 @@ def handle_client(conn, client_address):
         decrypted_data = cipher_server.decrypt(conn.recv(1024))
         data = json.loads(decrypted_data.decode())
         received_hmac = bytes.fromhex(data['hmac'])
-        received_message = data['message']
-        hmac_digest = hmac.new(b'', received_message.encode(), digestmod='sha256').digest()
+        received_command = data['command']
+        command = data['command']
+        hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
 
         if hmac.compare_digest(received_hmac, hmac_digest):
             print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + received_message)
         else:
             print('HMAC verification failed!')
             continue
+        
+        if command == "exchange_key2":
+            #TODO
+            print()
 
-        command, content = received_message.split(":", 1)
+        content = data["message"]
         
         if command == "online-users":
             username = content
             online_users = [key for key, value in connected_clients.items() if value.get("conn") is not None and key != username]
-            response = "Online Users:\n" + '\n'.join(online_users)
+            response = {"type": "success", "content": "Online Users:\n" + '\n'.join(online_users)}
         elif command == "register":
             username, password = content.split(",")
             if username in users:
-                response = "Username already exists. Please choose a different username."
+                response = {"type": "fail", "message": "Username already exists. Please choose a different username."}
             else:
                 encrypted_password = str(encrypt_password(password))
                 users[username] = encrypted_password
                 save_users(users)
-                response = "Registration successful. You can now login."
+                response = {"type": "success", "message": "Registration successful. You can now login."}
         elif command == "login":
             username, password = content.split(",")
             encrypted_password = encrypt_password(password)
             if username in users and users[username] == str(encrypted_password):
-                response = "Login successful. Welcome, {}!".format(username)
+                response = {"type": "success", "message": "Login successful. Welcome, {}!".format(username)}
                 connected_clients[username] = {
                     "conn": conn,
                     "cipher": cipher_client,
@@ -156,30 +162,55 @@ def handle_client(conn, client_address):
                     "certificate": certificate_client
                 }
             else:
-                response = "Invalid username or password. Please try again."
+                response = {"type": "fail", "message": "Invalid username or password. Please try again."}
         elif command == "logout":
             username = content
             connected_clients.get(username, {})["conn"] = None
-            response = "Logout successful. Goodby, {}!".format(username)
+            response = {"type": "success", "message": "Logout successful. Goodby, {}!".format(username)}
+        elif command == "connect": # Diffie-Hellman
+            sender, receiver = content.split(",")
+            if sender in connected_clients and receiver in connected_clients:
+                cert = connected_clients[sender]["certificate"]
+                pk = connected_clients[sender]["public_key"]
+                parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
+                private_key = parameters.generate_private_key()
+                public_key = private_key.public_key()
+                serialized_public_key = public_key.public_bytes(encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+                serialized_private_key = private_key.private_bytes(encoding=serialization.Encoding.DER, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
+                base64_public_key = base64.b64encode(serialized_public_key).decode('utf-8')
+                base64_private_key = base64.b64encode(serialized_private_key).decode('utf-8')
+
+                response = {
+                    'type': "exchange_key1",
+                    'sender': sender,
+                    'public_key': pk.export_key().decode(),
+                    'certificate': cert,
+                    'DH-Param-public-key1': base64_public_key,
+                    'DH-Param-private-key1': base64_private_key,
+                    'alpha&Q': parameters
+                }
+                conn_ = connected_clients[receiver]["conn"]
+                cipher_ = connected_clients[receiver]["cipher"]
+                secure_send_message(conn_, cipher_, response)
         elif command == "message":
             sender, receiver, message = content.split(",", 2)
             if sender in connected_clients and receiver in connected_clients:
                 receiver_conn = connected_clients[receiver]["conn"]
                 receiver_cipher = connected_clients[receiver]["cipher"]
-                message = f"Message from {sender}: {message}"
+                message = {"type": "success", "message": f"Message from {sender}: {message}"}
                 secure_send_message(receiver_conn, receiver_cipher, message)
-                response = "Message sent successfully."
+                response = {"type": "success", "message": "Message sent successfully."}
             else:
-                response = "Sender or receiver is not logged in."
+                response = {"type": "fail", "message": "Sender or receiver is not logged in."}
         elif command == "create_group":
             group_name, username = content.split(",")
             if group_name in groups:
-                response = "Group name already exists. Please choose a different group name."
+                response = {"type": "fail", "message": "Group name already exists. Please choose a different group name."}
             elif username not in users:
-                response = "Invalid username. Please log in first."
+                response = {"type": "fail", "message": "Invalid username. Please log in first."}
             else:
                 groups[group_name] = {"admin": [username], "members": [username]}
-                response = "Group '{}' created successfully.".format(group_name)
+                response = {"type": "success", "message": "Group '{}' created successfully.".format(group_name)}
         elif command == "send_group_message":
             group_name, username, message = content.split(",", 2)
             if group_name in groups and username in groups[group_name]["members"]:
@@ -187,11 +218,11 @@ def handle_client(conn, client_address):
                     if member in connected_clients and member != username:
                         member_conn = connected_clients[member]["conn"]
                         member_cipher = connected_clients[member]["cipher"]
-                        message = f"Group '{group_name}': message from {username}: {message}"
+                        message = {"type": "success", "message": f"Group '{group_name}': message from {username}: {message}"}
                         secure_send_message(member_conn, member_cipher, message)
-                response = "Message sent successfully."
+                response = {"type": "success", "message": "Message sent successfully."}
             else:
-                response = "You are not a member of the group or the group does not exist."
+                response = {"type": "fail", "message": "You are not a member of the group or the group does not exist."}
         elif command == "add_group_member":
             group_name, username, new_member = content.split(",", 2)
             if group_name in groups and username in groups[group_name]["admin"] and new_member in users:
@@ -200,11 +231,11 @@ def handle_client(conn, client_address):
                     if member in connected_clients:
                         member_conn = connected_clients[member]["conn"]
                         member_cipher = connected_clients[member]["cipher"]
-                        message = f"Group '{group_name}': Member {new_member} added to group"
+                        message = {"type": "success", "message": f"Group '{group_name}': Member {new_member} added to group"}
                         secure_send_message(member_conn, member_cipher, message)
-                response = "Member added successfully".format(new_member, group_name)
+                response = {"type": "success", "message":  "Member added successfully".format(new_member, group_name)}
             else:
-                response = "You are not a member of the group or the group or username does not exist."
+                response = {"type": "fail", "message":  "You are not a member of the group or the group or username does not exist."}
         elif command == "add_group_admin":
             group_name, username, new_admin = content.split(",", 2)
             if (
@@ -213,9 +244,9 @@ def handle_client(conn, client_address):
                 and new_admin in groups[group_name]["members"]
             ):
                 groups[group_name]["admin"].append(new_admin)
-                response = "Member '{}' is now an admin of group '{}'.".format(new_admin, group_name)
+                response = {"type": "success", "message":  "Member '{}' is now an admin of group '{}'.".format(new_admin, group_name)}
             else:
-                response = "You are not an admin or a member of the group or the group or username does not exist."
+                response = {"type": "fail", "message":  "You are not an admin or a member of the group or the group or username does not exist."}
         
         secure_send_message(conn, cipher_client, response)
         
