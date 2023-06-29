@@ -19,6 +19,27 @@ def secure_send_message(conn, cipher, message):
     
     conn.send(cipher.encrypt(json_data))
 
+def exchange_public_key(conn):
+    server_public_key = RSA.import_key(conn.recv(1024))
+    certificate_server = json.loads(conn.recv(1024).decode())
+    if certificate_server["id"] == "server" and server_public_key == RSA.import_key(certificate_server["public_key"].encode()):
+        print("Server public key certificate is ok.")
+    else:
+        print("Server public key certificate was not ok.")
+        return None, None, None
+    cipher_server = PKCS1_OAEP.new(server_public_key)
+    
+    conn.send(CLIENT_PUBLIC_KEY.export_key())
+    client_certificate = {
+        'id': "client",
+        'public_key': CLIENT_PUBLIC_KEY.export_key().decode()
+    }
+    client_certificate = json.dumps(client_certificate).encode()
+    conn.send(client_certificate)
+    cipher_client = PKCS1_OAEP.new(CLIENT_PRIVATE_KEY)
+
+    return cipher_client, cipher_server, server_public_key
+
 def client_program():
     host = socket.gethostname()  # as both code is running on same pc
     port = 5000  # socket server port number
@@ -27,10 +48,9 @@ def client_program():
     client_socket.connect((host, port))  # connect to the server
     print("Connected to the server.")
     
-    server_public_key = RSA.import_key(client_socket.recv(1024))
-    cipher_server = PKCS1_OAEP.new(server_public_key)
-    client_socket.send(CLIENT_PUBLIC_KEY.export_key())
-    cipher_client = PKCS1_OAEP.new(CLIENT_PRIVATE_KEY)
+    cipher_server = None
+    while cipher_server == None:
+        cipher_client, cipher_server, server_public_key = exchange_public_key(client_socket)
 
     def send_message():
         global user_name
@@ -44,8 +64,10 @@ def client_program():
                 client_socket.send("exit".encode())
                 break
             elif command == "help":
-                print("Commands:\n--register\n--login\n--message (sending message to another person)\n--create_group\n--send_group_message\n--add_group_member\n--add_group_admin")
+                print("Commands:\n--online-users\n--register\n--login\n--logout\n--message (sending message to another person)\n--create_group\n--send_group_message\n--add_group_member\n--add_group_admin")
                 continue
+            elif command == "online-users":
+                message = "online-users:" + user_name
             elif command == "register":
                 print("Enter username:")
                 username = input()
@@ -55,40 +77,43 @@ def client_program():
             elif command == "login":
                 print("Enter username:")
                 username = input()
+                user_name = username
                 print("Enter password:")
                 password = input()
                 message = "login:" + username + "," + password
+            elif command == "logout":
+                message = "logout:" + user_name
             elif command == "message":
                 print("Enter recipient:")
                 receiver = input()
                 print("Enter message:")
                 message = input()
-                content = f"{username},{receiver},{message}"
+                content = f"{user_name},{receiver},{message}"
                 message = "message:" + content
             elif command == "create_group":
                 print("Enter group name:")
                 group_name = input()
-                message = "create_group:{},{}".format(group_name, username)
+                message = "create_group:{},{}".format(group_name, user_name)
             elif command == "send_group_message":
                 print("Enter group name:")
                 group_name = input()
                 print("Enter message:")
                 message = input()
-                content = "{},{},{}".format(group_name, username, message)
+                content = "{},{},{}".format(group_name, user_name, message)
                 message = "send_group_message:" + content
             elif command == "add_group_member":
                 print("Enter group name:")
                 group_name = input()
                 print("Enter username of member to add:")
                 new_member = input()
-                content = "{},{},{}".format(group_name, username, new_member)
+                content = "{},{},{}".format(group_name, user_name, new_member)
                 message = "add_group_member:" + content
             elif command == "add_group_admin":
                 print("Enter group name:")
                 group_name = input()
                 print("Enter username of member to promote as admin:")
                 new_admin = input()
-                content = "{},{},{}".format(group_name, username, new_admin)
+                content = "{},{},{}".format(group_name, user_name, new_admin)
                 message = "add_group_admin:" + content
             else:
                 print("Invalid command. Please try again.")

@@ -2,17 +2,59 @@ import socket
 import threading
 import json
 import hmac
+import os
 from Crypto.Cipher import DES3, AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
+from Crypto.Protocol.KDF import PBKDF2
+import hashlib
+
+def generate_pub_prv_key():
+    global SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
+    
+    SERVER_PRIVATE_KEY = RSA.generate(2048)
+    SERVER_PUBLIC_KEY = SERVER_PRIVATE_KEY.publickey()
+
+    password = input("Enter private key password: ")
+
+    hashed_password = hashlib.sha256(password.encode()).digest()
+
+    ciphered_private_key = SERVER_PRIVATE_KEY.export_key(passphrase=hashed_password, pkcs=8, protection="scryptAndAES128-CBC")
+
+    with open("encrypted_private_key.pem", "wb") as file:
+        file.write(ciphered_private_key)
+
+    with open("public_key.pem", "wb") as file:
+        file.write(SERVER_PUBLIC_KEY.export_key())
+
+def load_pub_prv_key():
+
+    global SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
+
+    password = input("Enter private key password: ")
+    hashed_password = hashlib.sha256(password.encode()).digest()
+    
+    with open("encrypted_private_key.pem", "rb") as file:
+        encrypted_data = file.read()
+
+    SERVER_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
+
+    with open("public_key.pem", "rb") as file:
+        public_key = file.read()
+        SERVER_PUBLIC_KEY = RSA.import_key(public_key)
 
 USERS_FILE = "users.json"  # JSON file to store registered users
 connected_clients = {}
 groups = {}
-SERVER_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
-SERVER_PUBLIC_KEY = SERVER_PRIVATE_KEY.publickey()  # Get the corresponding public key
+SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY = None, None
 AES_KEY_PASSWORD = b'ServerPrivateKey'  # Private key for encryption
+
+GENERATE_PUB_PRV_KEY_RSA = 0 # will be 1 for running again and generate new pair of private/public RSA server key
+if GENERATE_PUB_PRV_KEY_RSA:
+    generate_pub_prv_key()
+
+load_pub_prv_key()
 
 def load_users():
     try:
@@ -46,13 +88,33 @@ def secure_send_message(conn, cipher, message):
     
     conn.send(cipher.encrypt(json_data))
 
+def exchange_public_key(conn, client_address):
+    conn.send(SERVER_PUBLIC_KEY.export_key())
+    server_certificate = {
+        'id': "server",
+        'public_key': SERVER_PUBLIC_KEY.export_key().decode()
+    }
+    server_certificate = json.dumps(server_certificate).encode()
+    conn.send(server_certificate)
+    
+    cipher_server = PKCS1_OAEP.new(SERVER_PRIVATE_KEY)
+    client_public_key = RSA.import_key(conn.recv(1024))
+    certificate_client = json.loads(conn.recv(1024).decode())
+    if certificate_client["id"] == "client" and client_public_key == RSA.import_key(certificate_client["public_key"].encode()):
+        print("Client {}:{} public key certificate is ok.".format(client_address[0], client_address[1]))
+    else:
+        print("Client {}:{} public key certificate was not ok.".format(client_address[0], client_address[1]))
+        return None, None, None, None
+    cipher_client = PKCS1_OAEP.new(client_public_key)
+
+    return cipher_server, cipher_client, client_public_key, certificate_client
+
 users = load_users()
 
 def handle_client(conn, client_address):
-    conn.send(SERVER_PUBLIC_KEY.export_key())
-    cipher_server = PKCS1_OAEP.new(SERVER_PRIVATE_KEY)
-    client_public_key = RSA.import_key(conn.recv(1024))
-    cipher_client = PKCS1_OAEP.new(client_public_key)
+    cipher_server = None
+    while cipher_server == None:
+        cipher_server, cipher_client, client_public_key, certificate_client = exchange_public_key(conn, client_address)
 
     while True:
         decrypted_data = cipher_server.decrypt(conn.recv(1024))
@@ -68,8 +130,12 @@ def handle_client(conn, client_address):
             continue
 
         command, content = received_message.split(":", 1)
-
-        if command == "register":
+        
+        if command == "online-users":
+            username = content
+            online_users = [key for key, value in connected_clients.items() if value.get("conn") is not None and key != username]
+            response = "Online Users:\n" + '\n'.join(online_users)
+        elif command == "register":
             username, password = content.split(",")
             if username in users:
                 response = "Username already exists. Please choose a different username."
@@ -85,10 +151,16 @@ def handle_client(conn, client_address):
                 response = "Login successful. Welcome, {}!".format(username)
                 connected_clients[username] = {
                     "conn": conn,
-                    "cipher": cipher_client
+                    "cipher": cipher_client,
+                    "public_key": client_public_key,
+                    "certificate": certificate_client
                 }
             else:
                 response = "Invalid username or password. Please try again."
+        elif command == "logout":
+            username = content
+            connected_clients.get(username, {})["conn"] = None
+            response = "Logout successful. Goodby, {}!".format(username)
         elif command == "message":
             sender, receiver, message = content.split(",", 2)
             if sender in connected_clients and receiver in connected_clients:
@@ -147,7 +219,6 @@ def handle_client(conn, client_address):
         
         secure_send_message(conn, cipher_client, response)
         
-
     conn.close()
 
 def server_program():
