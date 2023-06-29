@@ -3,8 +3,9 @@ import threading
 import hmac
 import json
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Cipher import PKCS1_OAEP, AES
 from Crypto.Hash import SHA256
+from Crypto.Util.Padding import pad, unpad
 
 user_name = ""
 CLIENT_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
@@ -107,6 +108,25 @@ def client_program():
                 print("Enter message:")
                 message = input()
                 message = f"{user_name},{receiver},{message}"
+            elif command == "end2end":
+                with open("session_key.key", "rb") as file:
+                    session_key = file.read()
+                print("Enter recipient:")
+                receiver = input()
+                message = f"{user_name},{receiver}"
+                secure_send_message(client_socket, cipher_server, command, message)
+                print("Enter message:")
+                message = input()
+                json_message = {
+                    "message": message,
+                    "tcp_seq_num": 1, # update later
+                    "mac": 1 # update later
+                }
+                json_bytes = json.dumps(json_message).encode('utf-8')
+                cipher = AES.new(session_key, AES.MODE_ECB)
+                encrypted_data = cipher.encrypt(pad(json_bytes, AES.block_size))
+                client_socket.send(encrypted_data)
+                continue
             elif command == "create_group":
                 print("Enter group name:")
                 group_name = input()
@@ -177,7 +197,15 @@ def client_program():
                 elif received_type == "exchange_key3":
                     public_key = data['public_key']
                     print(public_key)
-
+                elif received_type == "end2end":
+                    sender = data["sender"]
+                    with open("session_key.key", "rb") as file:
+                        session_key = file.read()
+                    cipher = AES.new(session_key, AES.MODE_ECB)
+                    decrypted_data = unpad(cipher.decrypt(client_socket.recv(1024)), AES.block_size)
+                    decrypted_json = json.loads(decrypted_data.decode('utf-8'))
+                    print(decrypted_json)
+                    print(f"Received message from {sender}:", decrypted_json['message'])
             else:
                 print('HMAC verification failed!')
 

@@ -88,7 +88,7 @@ def secure_send_message(conn, cipher, data):
     hmac_digest = hmac.new(b'', data["type"].encode(), digestmod='sha256').digest()
     data['hmac'] = hmac_digest.hex()
     json_data = json.dumps(data).encode()
-
+    
     conn.send(cipher.encrypt(json_data))
 
 def exchange_public_key(conn, client_address):
@@ -122,15 +122,14 @@ def handle_client(conn, client_address):
         data = json.loads(decrypted_data.decode())
         received_hmac = bytes.fromhex(data['hmac'])
         received_command = data['command']
-        received_message = data['message']
         command = data['command']
         hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
 
-        if hmac.compare_digest(received_hmac, hmac_digest):
-            print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + received_message)
-        else:
-            print('HMAC verification failed!')
-            continue
+        # if hmac.compare_digest(received_hmac, hmac_digest):
+        #     print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + received_message)
+        # else:
+        #     print('HMAC verification failed!')
+        #     continue
         
         if command == "exchange_key2":
             #TODO
@@ -141,7 +140,7 @@ def handle_client(conn, client_address):
         if command == "online-users":
             username = content
             online_users = [key for key, value in connected_clients.items() if value.get("conn") is not None and key != username]
-            response = {"type": "success", "message": "Online Users:\n" + '\n'.join(online_users)}
+            response = {"type": "success", "content": "Online Users:\n" + '\n'.join(online_users)}
         elif command == "register":
             username, password = content.split(",")
             if username in users:
@@ -168,36 +167,6 @@ def handle_client(conn, client_address):
             username = content
             connected_clients.get(username, {})["conn"] = None
             response = {"type": "success", "message": "Logout successful. Goodby, {}!".format(username)}
-        elif command == "connect2":
-            sender, receiver = content.split(",")
-            if sender in connected_clients and receiver in connected_clients:
-                cert_sender = connected_clients[sender]["certificate"]
-                pk_sender = connected_clients[sender]["public_key"]
-                cert_receiver = connected_clients[receiver]["certificate"]
-                pk_receiver = connected_clients[receiver]["public_key"]
-                response_sender = {
-                    'type': "exchange_key3",
-                    'with': receiver,
-                    'public_key': pk_receiver.export_key().decode(),
-                    'certificate': cert_receiver
-                }
-                response_receiver = {
-                    'type': "exchange_key3",
-                    'with': sender,
-                    'public_key': pk_sender.export_key().decode(),
-                    'certificate': cert_sender
-                }
-                hmac_digest = hmac.new(b'', response_sender["type"].encode(), digestmod='sha256').digest()
-                response_sender['hmac'] = hmac_digest.hex()
-                conn_sender = connected_clients[sender]["conn"]
-                cipher_sender = connected_clients[sender]["cipher"]
-                conn_sender.send(json.dumps(response_sender).encode())
-
-                hmac_digest = hmac.new(b'', response_receiver["type"].encode(), digestmod='sha256').digest()
-                response_receiver['hmac'] = hmac_digest.hex()
-                conn_receiver = connected_clients[receiver]["conn"]
-                cipher_receiver = connected_clients[receiver]["cipher"]
-                conn_receiver.send(json.dumps(response_receiver).encode())
         elif command == "connect": # Diffie-Hellman
             sender, receiver = content.split(",")
             if sender in connected_clients and receiver in connected_clients:
@@ -233,6 +202,14 @@ def handle_client(conn, client_address):
                 response = {"type": "success", "message": "Message sent successfully."}
             else:
                 response = {"type": "fail", "message": "Sender or receiver is not logged in."}
+        elif command == "end2end":
+            sender, receiver = content.split(",")
+            end2end_encrypted_message = conn.recv(1024)
+            conn_receiver, cipher_receiver = connected_clients[receiver]["conn"], connected_clients[receiver]["cipher"]
+            response = {"type": "end2end", "sender": sender}
+            secure_send_message(conn_receiver, cipher_receiver, response)
+            conn_receiver.send(end2end_encrypted_message)
+            response = {"type": "success", "message": "Message sent E2E successfully"}
         elif command == "create_group":
             group_name, username = content.split(",")
             if group_name in groups:
