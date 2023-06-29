@@ -10,8 +10,10 @@ from Crypto.Util.Padding import pad, unpad
 user_name = ""
 CLIENT_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
 CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding public key
+cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
 session_keys = {}
 cipher_client = None
+archive = {}
 
 def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , sender):
     command = 'connect2'
@@ -28,6 +30,18 @@ def secure_send_message(conn, cipher, command, message):
     json_data = json.dumps(data).encode()
     
     conn.send(cipher.encrypt(json_data))
+
+def save_message_to_archive(packet, username):
+    global cipher_client_public
+    json_data = json.dumps(packet).encode()
+    if username not in archive.keys():
+        archive[username] = [cipher_client_public.encrypt(json_data)]
+    else:
+        archive[username].append(cipher_client_public.encrypt(json_data))
+
+def read_messages_from_archive(user):
+    messages = [json.loads(cipher_client.decrypt(cipher).decode()) for cipher in archive[user]]
+    return messages
 
 def exchange_public_key(conn):
     server_public_key = RSA.import_key(conn.recv(1024))
@@ -79,6 +93,17 @@ def client_program():
                 continue
             elif command == "online-users":
                 message = user_name
+            elif command == "history-chat":
+                print("Show history chat with user:")
+                username = input()
+                messages = read_messages_from_archive(username)
+                hist_chat = ""
+                print("messages:", messages)
+                print("archive:", archive)
+                for m in messages:
+                    hist_chat += f"history chat with {username}:\n" + m["sender"] + ": " + m["message"]
+                print(hist_chat)
+                continue
             elif command == "register":
                 print("Enter username:")
                 username = input()
@@ -109,6 +134,10 @@ def client_program():
                 message = input()
                 message = f"{user_name},{receiver},{message}"
             elif command == "end2end":
+                # Update: session key from sessionkeys[receiver]
+                # Update: tcp_seq_num_receive from tcp_seq_num[receiver]["receive"], tcp_seq_num_send from tcp_seq_num[receiver]["send"]
+                # Update: tcp_seq_num[receiver]["send"] += 1
+                
                 with open("session_key.key", "rb") as file:
                     session_key = file.read()
                 print("Enter recipient:")
@@ -119,9 +148,11 @@ def client_program():
                 message = input()
                 json_message = {
                     "message": message,
+                    "sender": user_name,
                     "tcp_seq_num": 1, # update later
                     "mac": 1 # update later
                 }
+                save_message_to_archive(json_message, receiver)
                 json_bytes = json.dumps(json_message).encode('utf-8')
                 cipher = AES.new(session_key, AES.MODE_ECB)
                 encrypted_data = cipher.encrypt(pad(json_bytes, AES.block_size))
@@ -205,6 +236,10 @@ def client_program():
                     decrypted_data = unpad(cipher.decrypt(client_socket.recv(1024)), AES.block_size)
                     decrypted_json = json.loads(decrypted_data.decode('utf-8'))
                     print(decrypted_json)
+                    save_message_to_archive(decrypted_json, sender)
+                    # Update:
+                    # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
+                        # Valid Message
                     print(f"Received message from {sender}:", decrypted_json['message'])
             else:
                 print('HMAC verification failed!')
