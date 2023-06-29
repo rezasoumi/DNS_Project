@@ -12,8 +12,13 @@ CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding publ
 session_keys = {}
 cipher_client = None
 
+def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , sender):
+    command = 'connect2'
+    message = receiver + ',' + sender
+    secure_send_message(client_socket, cipher_server, command, message)
+
 def secure_send_message(conn, cipher, command, message):
-    hmac_digest = hmac.new(b'', command, digestmod='sha256').digest()
+    hmac_digest = hmac.new(b'', command.encode(), digestmod='sha256').digest()
     data = {
         'hmac': hmac_digest.hex(),
         'command': command,
@@ -95,6 +100,10 @@ def client_program():
             elif command == "message":
                 print("Enter recipient:")
                 receiver = input()
+                if receiver in session_keys.keys():
+                    session_key  = session_keys[receiver]
+                else:
+                    run_session_key_agreement_protocol(client_socket, cipher_server, receiver , user_name)
                 print("Enter message:")
                 message = input()
                 message = f"{user_name},{receiver},{message}"
@@ -131,15 +140,22 @@ def client_program():
 
     def receive_message():
         while True:
-            decrypted_data = cipher_client.decrypt(client_socket.recv(1024))
-            data = json.loads(decrypted_data.decode())
+            recieved_data = client_socket.recv(1024)
+            try:
+                if json.loads(recieved_data.decode()) == dict:
+                    data = json.loads(recieved_data.decode())
+            except:
+                decrypted_data = cipher_client.decrypt(recieved_data)
+                data = json.loads(decrypted_data.decode())
+                print("Encrypt connection")
+
             received_hmac = bytes.fromhex(data['hmac'])
             received_type = data['type']
             hmac_digest = hmac.new(b'', received_type.encode(), digestmod='sha256').digest()
 
             if hmac.compare_digest(received_hmac, hmac_digest):
                 if received_type == "success" or received_type == "failure":
-                    print('Received message:', data["message"])
+                    print('Received message:', data['message'])
                 elif received_type == "exchange_key1":
                     parameters = data["alpha&Q"]
                     private_key = parameters.generate_private_key()
@@ -158,6 +174,10 @@ def client_program():
                     }
                     json_payload = json.dumps(payload).encode()
                     secure_send_message(client_socket, cipher_client, json_payload)
+                elif received_type == "exchange_key3":
+                    public_key = data['public_key']
+                    print(public_key)
+
             else:
                 print('HMAC verification failed!')
 
