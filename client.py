@@ -5,28 +5,34 @@ import json
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
 from Crypto.Hash import SHA256
+from cryptography.hazmat.primitives.asymmetric import dh
 from Crypto.Util.Padding import pad, unpad
+import hashlib
+import sys
 
 user_name = ""
-CLIENT_PRIVATE_KEY = RSA.generate(2048)  # Generate a new private key
+CLIENT_PRIVATE_KEY = RSA.generate(1024)  # Generate a new private key
 CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding public key
 cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
+# CLIENT_PRIVATE_KEY = None  # Generate a new private key
+# CLIENT_PUBLIC_KEY = None # Get the corresponding public key
+# cipher_client_public = None
 session_keys = {}
 cipher_client = None
 archive = {}
+private_DH_keys = {}
+CERT = "client"
 
 def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , sender):
-    command = 'connect2'
-    message = receiver + ',' + sender
-    secure_send_message(client_socket, cipher_server, command, message)
-
-def secure_send_message(conn, cipher, command, message):
-    hmac_digest = hmac.new(b'', command.encode(), digestmod='sha256').digest()
     data = {
-        'hmac': hmac_digest.hex(),
-        'command': command,
-        'message': message
+        'command': 'connect2',
+        'message': receiver + ',' + sender
     }
+    secure_send_message(client_socket, cipher_server, data)
+
+def secure_send_message(conn, cipher, data):
+    hmac_digest = hmac.new(b'', data["command"].encode(), digestmod='sha256').digest()
+    data['hmac'] = hmac_digest.hex()
     json_data = json.dumps(data).encode()
     
     conn.send(cipher.encrypt(json_data))
@@ -43,9 +49,26 @@ def read_messages_from_archive(user):
     messages = [json.loads(cipher_client.decrypt(cipher).decode()) for cipher in archive[user]]
     return messages
 
+def load_pub_prv_key(user):
+    global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY
+
+    password = input("Enter private key password: ")
+    hashed_password = hashlib.sha256(password.encode()).digest()
+
+    with open(f"{user}_private_rsa.pem", "rb") as file:
+        encrypted_data = file.read()
+
+    CLIENT_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
+
+    with open(f"{user}_public_rsa.pem", "rb") as file:
+        public_key = file.read()
+        CLIENT_PUBLIC_KEY = RSA.import_key(public_key)
+    global cipher_client_public
+    cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
+
 def exchange_public_key(conn):
-    server_public_key = RSA.import_key(conn.recv(1024))
-    certificate_server = json.loads(conn.recv(1024).decode())
+    server_public_key = RSA.import_key(conn.recv(65536))
+    certificate_server = json.loads(conn.recv(65536).decode())
     if certificate_server["id"] == "server" and server_public_key == RSA.import_key(certificate_server["public_key"].encode()):
         print("Server public key certificate is ok.")
     else:
@@ -64,14 +87,16 @@ def exchange_public_key(conn):
 
     return cipher_client, cipher_server, server_public_key
 
-def client_program():
+def client_program(user):
     host = socket.gethostname()  # as both code is running on same pc
     port = 5000  # socket server port number
 
     client_socket = socket.socket()  # instantiate
     client_socket.connect((host, port))  # connect to the server
-    print("Connected to the server.")
     
+    print("Connected to the server.")
+    #load_pub_prv_key(user)
+
     global cipher_client
     cipher_server = None
     while cipher_server == None:
@@ -84,6 +109,7 @@ def client_program():
 
         while True:
             command = input()
+            data = None
 
             if command == "exit":
                 client_socket.send("exit".encode())
@@ -122,7 +148,23 @@ def client_program():
             elif command == "connect":
                 print("Enter ID of the person you want to communicate with:")
                 receiver = input()
-                message = user_name + "," + receiver
+                parameters = dh.generate_parameters(generator=2, key_size=512)
+                private_key_dh = parameters.generate_private_key()
+                private_DH_keys[receiver] = [private_key_dh, parameters]
+
+                public_key_class = private_key_dh.public_key()
+                root = parameters.parameter_numbers().p
+                generator = parameters.parameter_numbers().g
+                public_key_value = public_key_class.public_numbers().y
+                cert = CERT
+                data = {
+                    'command': "DH_1",
+                    'message': user_name + "," + receiver,
+                    'root': root,
+                    'generator': generator,
+                    'pub_key_dh_sender': public_key_value,
+                    'cert': cert
+                }
             elif command == "message":
                 print("Enter recipient:")
                 receiver = input()
@@ -142,8 +184,11 @@ def client_program():
                     session_key = file.read()
                 print("Enter recipient:")
                 receiver = input()
-                message = f"{user_name},{receiver}"
-                secure_send_message(client_socket, cipher_server, command, message)
+                data = {
+                    'command': command,
+                    'message': f"{user_name},{receiver}"
+                }
+                secure_send_message(client_socket, cipher_server, data)
                 print("Enter message:")
                 message = input()
                 json_message = {
@@ -184,7 +229,12 @@ def client_program():
                 print("Invalid command. Please try again.")
                 continue
             
-            secure_send_message(client_socket, cipher_server, command, message)
+            if data is None:
+                data = {
+                    'command': command,
+                    'message': message
+                }
+            secure_send_message(client_socket, cipher_server, data)
 
             if message.lower() == 'exit':
                 break
@@ -241,6 +291,44 @@ def client_program():
                     # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
                         # Valid Message
                     print(f"Received message from {sender}:", decrypted_json['message'])
+                elif received_type == "DH_2":
+                    sender = data["sender"]
+                    data = json.loads(cipher_client.decrypt(client_socket.recv(2048)).decode())
+                    # todo check mac and cert
+                    public_numbers = dh.DHPublicNumbers(data['pub_key_dh'], parameters.parameter_numbers())
+                    reconstructed_public_key = public_numbers.public_key()
+                    dh_private_key, parameters = private_DH_keys[sender]
+                    public_numbers = dh.DHPublicNumbers(data['pub_key_dh'], parameters.parameter_numbers())
+                    reconstructed_public_key = public_numbers.public_key()
+                    session_key = dh_private_key.exchange(reconstructed_public_key)
+                    session_keys[sender] = session_key
+                    print(f"DH key agreement with {sender} is established.")
+                elif received_type == "DH_1":
+                    pn = dh.DHParameterNumbers(data['root'], data['generator'])
+                    parameters = pn.parameters()
+                    my_dh_private_key = parameters.generate_private_key()
+                    dh_public_key = my_dh_private_key.public_key()
+                    public_numbers = dh.DHPublicNumbers(data['pub_key_dh_sender'], parameters.parameter_numbers())
+                    reconstructed_public_key = public_numbers.public_key()
+                    session_key = my_dh_private_key.exchange(reconstructed_public_key)
+                    sender = data['message'].split(",")[0]
+                    session_keys[sender] = session_key
+
+                    sender_public_key = RSA.import_key(data["pub_key_RSA_sender"].encode())
+                    cipher = PKCS1_OAEP.new(sender_public_key)
+                    data = {
+                        'command': "DH_2",
+                        'message': f"{user_name},{sender}"
+                    }
+                    secure_send_message(client_socket, cipher_server, data)
+                    cert = CERT
+                    json_message = {
+                        "cert": cert,
+                        "pub_key_dh": dh_public_key.public_numbers().y,
+                        "mac": 1 # update later encrypt sth with private key and send
+                    }
+                    json_bytes = json.dumps(json_message).encode('utf-8')
+                    client_socket.send(cipher.encrypt(json_bytes))
             else:
                 print('HMAC verification failed!')
 
@@ -251,4 +339,5 @@ def client_program():
     receive_thread.start()
 
 if __name__ == '__main__':
-    client_program()
+    arguments = sys.argv
+    client_program(arguments[1])

@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 def generate_pub_prv_key():
     global SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
     
-    SERVER_PRIVATE_KEY = RSA.generate(2048)
+    SERVER_PRIVATE_KEY = RSA.generate(8192)
     SERVER_PUBLIC_KEY = SERVER_PRIVATE_KEY.publickey()
 
     password = input("Enter private key password: ")
@@ -101,8 +101,8 @@ def exchange_public_key(conn, client_address):
     conn.send(server_certificate)
     
     cipher_server = PKCS1_OAEP.new(SERVER_PRIVATE_KEY)
-    client_public_key = RSA.import_key(conn.recv(1024))
-    certificate_client = json.loads(conn.recv(1024).decode())
+    client_public_key = RSA.import_key(conn.recv(65536))
+    certificate_client = json.loads(conn.recv(65536).decode())
     if certificate_client["id"] == "client" and client_public_key == RSA.import_key(certificate_client["public_key"].encode()):
         print("Client {}:{} public key certificate is ok.".format(client_address[0], client_address[1]))
     else:
@@ -118,12 +118,19 @@ def handle_client(conn, client_address):
         cipher_server, cipher_client, client_public_key, certificate_client = exchange_public_key(conn, client_address)
 
     while True:
-        decrypted_data = cipher_server.decrypt(conn.recv(1024))
-        data = json.loads(decrypted_data.decode())
-        received_hmac = bytes.fromhex(data['hmac'])
-        received_command = data['command']
-        command = data['command']
-        hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
+        rcv_data = conn.recv(65536)
+        try:
+            decrypted_data = cipher_server.decrypt(rcv_data)
+            data = json.loads(decrypted_data.decode())
+            received_hmac = bytes.fromhex(data['hmac'])
+            received_command = data['command']
+            command = data['command']
+            hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
+        except:
+            a = cipher_server.decrypt(rcv_data).decode()
+            # a = json.loads(rcv_data.decode('utf-8'))
+            print(a)
+            continue
 
         # if hmac.compare_digest(received_hmac, hmac_digest):
         #     print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + received_message)
@@ -167,31 +174,24 @@ def handle_client(conn, client_address):
             username = content
             connected_clients.get(username, {})["conn"] = None
             response = {"type": "success", "message": "Logout successful. Goodby, {}!".format(username)}
-        elif command == "connect": # Diffie-Hellman
+        elif command == "DH_1": # Diffie-Hellman
             sender, receiver = content.split(",")
             if sender in connected_clients and receiver in connected_clients:
-                cert = connected_clients[sender]["certificate"]
-                pk = connected_clients[sender]["public_key"]
-                parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
-                private_key = parameters.generate_private_key()
-                public_key = private_key.public_key()
-                serialized_public_key = public_key.public_bytes(encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo)
-                serialized_private_key = private_key.private_bytes(encoding=serialization.Encoding.DER, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
-                base64_public_key = base64.b64encode(serialized_public_key).decode('utf-8')
-                base64_private_key = base64.b64encode(serialized_private_key).decode('utf-8')
-
-                response = {
-                    'type': "exchange_key1",
-                    'sender': sender,
-                    'public_key': pk.export_key().decode(),
-                    'certificate': cert,
-                    'DH-Param-public-key1': base64_public_key,
-                    'DH-Param-private-key1': base64_private_key,
-                    'alpha&Q': parameters
-                }
-                conn_ = connected_clients[receiver]["conn"]
-                cipher_ = connected_clients[receiver]["cipher"]
-                secure_send_message(conn_, cipher_, response)
+                receiver_conn = connected_clients[receiver]["conn"]
+                receiver_cipher = connected_clients[receiver]["cipher"]
+                # data['pub_key_RSA_sender'] = client_public_key.export_key().decode()
+                data['type'] = "DH_1"
+                del data['command']
+                secure_send_message(receiver_conn, receiver_cipher, data)
+                response = {"type": "succes", "message": f"Send request to {receiver} successfully."}
+        elif command == "DH_2":
+            sender, receiver = content.split(",")
+            encrypted_data = conn.recv(2048).decode('utf-8')
+            conn_receiver, cipher_receiver = connected_clients[receiver]["conn"], connected_clients[receiver]["cipher"]
+            response = {"type": "DH_2", "sender": sender}
+            secure_send_message(conn_receiver, cipher_receiver, response)
+            conn_receiver.send(encrypted_data)
+            response = {"type": "succes", "message": f"Send DH-Params to {receiver} successfully."}
         elif command == "message":
             sender, receiver, message = content.split(",", 2)
             if sender in connected_clients and receiver in connected_clients:
@@ -255,7 +255,9 @@ def handle_client(conn, client_address):
                 response = {"type": "success", "message":  "Member '{}' is now an admin of group '{}'.".format(new_admin, group_name)}
             else:
                 response = {"type": "fail", "message":  "You are not an admin or a member of the group or the group or username does not exist."}
-        
+        else:
+                response = {"type": "fail", "message":  "Unsupported command."}
+
         secure_send_message(conn, cipher_client, response)
         
     conn.close()
