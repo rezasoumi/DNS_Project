@@ -37,13 +37,13 @@ def load_pub_prv_key():
     password = input("Enter private key password: ")
     hashed_password = hashlib.sha256(password.encode()).digest()
     
-    with open("encrypted_private_key.pem", "rb") as file:
+    with open("ali_private_rsa.pem", "rb") as file:
         encrypted_data = file.read()
 
     SERVER_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
 
-    with open("public_key.pem", "rb") as file:
+    with open("ali_public_rsa.pem", "rb") as file:
         public_key = file.read()
         SERVER_PUBLIC_KEY = RSA.import_key(public_key)
 
-generate_pub_prv_key()
+load_pub_prv_key()

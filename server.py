@@ -9,10 +9,13 @@ from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Hash import SHA256
 import hashlib
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives import serialization
+from Crypto.Signature import PKCS1_v1_5
+import time
 
 def generate_pub_prv_key():
     global SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
@@ -53,6 +56,7 @@ connected_clients = {}
 groups = {}
 SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY = None, None
 AES_KEY_PASSWORD = b'ServerPrivateKey'  # Private key for encryption
+verifier = None
 
 GENERATE_PUB_PRV_KEY_RSA = 0 # will be 1 for running again and generate new pair of private/public RSA server key
 if GENERATE_PUB_PRV_KEY_RSA:
@@ -92,6 +96,7 @@ def secure_send_message(conn, cipher, data):
     conn.send(cipher.encrypt(json_data))
 
 def exchange_public_key(conn, client_address):
+    global verifier
     conn.send(SERVER_PUBLIC_KEY.export_key())
     server_certificate = {
         'id': "server",
@@ -109,6 +114,7 @@ def exchange_public_key(conn, client_address):
         print("Client {}:{} public key certificate was not ok.".format(client_address[0], client_address[1]))
         return None, None, None, None
     cipher_client = PKCS1_OAEP.new(client_public_key)
+    verifier = PKCS1_v1_5.new(client_public_key)
 
     return cipher_server, cipher_client, client_public_key, certificate_client
 
@@ -119,18 +125,26 @@ def handle_client(conn, client_address):
 
     while True:
         rcv_data = conn.recv(65536)
-        try:
-            decrypted_data = cipher_server.decrypt(rcv_data)
-            data = json.loads(decrypted_data.decode())
-            received_hmac = bytes.fromhex(data['hmac'])
-            received_command = data['command']
-            command = data['command']
-            hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
-        except:
-            a = cipher_server.decrypt(rcv_data).decode()
-            # a = json.loads(rcv_data.decode('utf-8'))
-            print(a)
-            continue
+        time.sleep(0.5)
+        rcv_sign = conn.recv(65536)
+        #try:
+        decrypted_data = cipher_server.decrypt(rcv_data)
+        data = json.loads(decrypted_data.decode())
+        command = data['command']
+        # hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
+        # sign = json.loads(cipher_client.decrypt(rcv_sign).decode())
+        
+        is_valid = verifier.verify(SHA256.new(decrypted_data), rcv_sign)
+        if is_valid:
+            print("Signature is valid. The message was signed by Alice.")
+        else:
+            print("Signature is invalid. The message may have been tampered with or not signed by Alice.")
+        # except:
+        #     a = cipher_server.decrypt(rcv_data).decode()
+        #     # a = json.loads(rcv_data.decode('utf-8'))
+        #     print(a)
+        #     print("injam")
+        #     continue
 
         # if hmac.compare_digest(received_hmac, hmac_digest):
         #     print("Received from client {}:{}".format(client_address[0], client_address[1]) + " - " + received_message)
@@ -183,15 +197,20 @@ def handle_client(conn, client_address):
                 data['type'] = "DH_1"
                 del data['command']
                 secure_send_message(receiver_conn, receiver_cipher, data)
-                response = {"type": "succes", "message": f"Send request to {receiver} successfully."}
+                receiver_conn.send(client_public_key.export_key())
+                response = {"type": "success", "message": f"Send request to {receiver} successfully."}
+                print("DH_1 sent")
         elif command == "DH_2":
             sender, receiver = content.split(",")
-            encrypted_data = conn.recv(2048).decode('utf-8')
+            encrypted_data = conn.recv(65536)
             conn_receiver, cipher_receiver = connected_clients[receiver]["conn"], connected_clients[receiver]["cipher"]
             response = {"type": "DH_2", "sender": sender}
             secure_send_message(conn_receiver, cipher_receiver, response)
             conn_receiver.send(encrypted_data)
-            response = {"type": "succes", "message": f"Send DH-Params to {receiver} successfully."}
+            time.sleep(0.5)
+            conn_receiver.send(client_public_key.export_key())
+            response = {"type": "success", "message": f"Send DH-Params to {receiver} successfully."}
+            print("DH_2 sent")
         elif command == "message":
             sender, receiver, message = content.split(",", 2)
             if sender in connected_clients and receiver in connected_clients:
@@ -204,11 +223,15 @@ def handle_client(conn, client_address):
                 response = {"type": "fail", "message": "Sender or receiver is not logged in."}
         elif command == "end2end":
             sender, receiver = content.split(",")
-            end2end_encrypted_message = conn.recv(1024)
+            end2end_encrypted_message = conn.recv(65536)
+            time.sleep(0.5)
+            sign_encrypted_message = conn.recv(65536)
             conn_receiver, cipher_receiver = connected_clients[receiver]["conn"], connected_clients[receiver]["cipher"]
             response = {"type": "end2end", "sender": sender}
             secure_send_message(conn_receiver, cipher_receiver, response)
             conn_receiver.send(end2end_encrypted_message)
+            time.sleep(0.5)
+            conn_receiver.send(sign_encrypted_message)
             response = {"type": "success", "message": "Message sent E2E successfully"}
         elif command == "create_group":
             group_name, username = content.split(",")

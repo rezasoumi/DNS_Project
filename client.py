@@ -4,24 +4,71 @@ import hmac
 import json
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto.Signature import PKCS1_v1_5
 from Crypto.Hash import SHA256
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.asymmetric import dh
 from Crypto.Util.Padding import pad, unpad
 import hashlib
 import sys
+import time
+
+def generate_pub_prv_key(user):
+    global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY
+    
+    CLIENT_PRIVATE_KEY = RSA.generate(11000)
+    CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()
+
+    password = input("Enter private key password: ")
+
+    hashed_password = hashlib.sha256(password.encode()).digest()
+
+    ciphered_private_key = CLIENT_PRIVATE_KEY.export_key(passphrase=hashed_password, pkcs=8, protection="scryptAndAES128-CBC")
+
+    with open(f"{user}_encrypted_private_key.pem", "wb") as file:
+        file.write(ciphered_private_key)
+
+    with open(f"{user}_public_key.pem", "wb") as file:
+        file.write(CLIENT_PUBLIC_KEY.export_key())
+
+def load_pub_prv_key(user):
+    global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY, cipher_client_public, signer
+
+    password = input("Enter private key password: ")
+    hashed_password = hashlib.sha256(password.encode()).digest()
+
+    print(f"{user}_private_rsa.pem")
+    with open(f"{user}_private_rsa.pem", "rb") as file:
+        encrypted_data = file.read()
+
+    CLIENT_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
+    print(f"{user}_public_rsa.pem")
+    with open(f"{user}_public_rsa.pem", "rb") as file:
+        public_key = file.read()
+        CLIENT_PUBLIC_KEY = RSA.import_key(public_key)
+
+    cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
+    signer = PKCS1_v1_5.new(CLIENT_PRIVATE_KEY)
+    print("done1")
 
 user_name = ""
-CLIENT_PRIVATE_KEY = RSA.generate(1024)  # Generate a new private key
-CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding public key
-cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
-# CLIENT_PRIVATE_KEY = None  # Generate a new private key
-# CLIENT_PUBLIC_KEY = None # Get the corresponding public key
-# cipher_client_public = None
+# CLIENT_PRIVATE_KEY = RSA.generate(1024)  # Generate a new private key
+# CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()  # Get the corresponding public key
+# cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
+CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY = None, None
+cipher_client_public = None
 session_keys = {}
 cipher_client = None
 archive = {}
 private_DH_keys = {}
 CERT = "client"
+signer = None
+verifier = {}
+cipher_end2end_public_key = {}
+
+# enerate_pub_prv_key(sys.argv[1])
+load_pub_prv_key(sys.argv[1])
 
 def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , sender):
     data = {
@@ -31,11 +78,11 @@ def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , 
     secure_send_message(client_socket, cipher_server, data)
 
 def secure_send_message(conn, cipher, data):
-    hmac_digest = hmac.new(b'', data["command"].encode(), digestmod='sha256').digest()
-    data['hmac'] = hmac_digest.hex()
     json_data = json.dumps(data).encode()
-    
     conn.send(cipher.encrypt(json_data))
+    sign = signer.sign(SHA256.new(json_data))
+    time.sleep(0.5)
+    conn.send(sign)
 
 def save_message_to_archive(packet, username):
     global cipher_client_public
@@ -48,23 +95,6 @@ def save_message_to_archive(packet, username):
 def read_messages_from_archive(user):
     messages = [json.loads(cipher_client.decrypt(cipher).decode()) for cipher in archive[user]]
     return messages
-
-def load_pub_prv_key(user):
-    global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY
-
-    password = input("Enter private key password: ")
-    hashed_password = hashlib.sha256(password.encode()).digest()
-
-    with open(f"{user}_private_rsa.pem", "rb") as file:
-        encrypted_data = file.read()
-
-    CLIENT_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
-
-    with open(f"{user}_public_rsa.pem", "rb") as file:
-        public_key = file.read()
-        CLIENT_PUBLIC_KEY = RSA.import_key(public_key)
-    global cipher_client_public
-    cipher_client_public = PKCS1_OAEP.new(CLIENT_PUBLIC_KEY)
 
 def exchange_public_key(conn):
     server_public_key = RSA.import_key(conn.recv(65536))
@@ -95,7 +125,6 @@ def client_program(user):
     client_socket.connect((host, port))  # connect to the server
     
     print("Connected to the server.")
-    #load_pub_prv_key(user)
 
     global cipher_client
     cipher_server = None
@@ -180,10 +209,11 @@ def client_program(user):
                 # Update: tcp_seq_num_receive from tcp_seq_num[receiver]["receive"], tcp_seq_num_send from tcp_seq_num[receiver]["send"]
                 # Update: tcp_seq_num[receiver]["send"] += 1
                 
-                with open("session_key.key", "rb") as file:
-                    session_key = file.read()
+                #with open("session_key.key", "rb") as file:
+                #    session_key = file.read()
                 print("Enter recipient:")
                 receiver = input()
+                session_key = session_keys[receiver]
                 data = {
                     'command': command,
                     'message': f"{user_name},{receiver}"
@@ -199,9 +229,17 @@ def client_program(user):
                 }
                 save_message_to_archive(json_message, receiver)
                 json_bytes = json.dumps(json_message).encode('utf-8')
-                cipher = AES.new(session_key, AES.MODE_ECB)
+                derived_key = HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=None,
+                    info=b'session_key',
+                ).derive(session_key)
+                cipher = AES.new(derived_key, AES.MODE_ECB)
                 encrypted_data = cipher.encrypt(pad(json_bytes, AES.block_size))
                 client_socket.send(encrypted_data)
+                sign = signer.sign(SHA256.new(json_bytes))
+                client_socket.send(sign)
                 continue
             elif command == "create_group":
                 print("Enter group name:")
@@ -241,7 +279,7 @@ def client_program(user):
 
     def receive_message():
         while True:
-            recieved_data = client_socket.recv(1024)
+            recieved_data = client_socket.recv(65536)
             try:
                 if json.loads(recieved_data.decode()) == dict:
                     data = json.loads(recieved_data.decode())
@@ -257,51 +295,51 @@ def client_program(user):
             if hmac.compare_digest(received_hmac, hmac_digest):
                 if received_type == "success" or received_type == "failure":
                     print('Received message:', data['message'])
-                elif received_type == "exchange_key1":
-                    parameters = data["alpha&Q"]
-                    private_key = parameters.generate_private_key()
-                    public_key = private_key.public_key()
-                    shared_secret = private_key.exchange(data["DH-Param-public-key1"])
-                    session_keys[data["sender"]] = shared_secret
-                    client_public_key = RSA.import_key(data["public_key"].encode())
-                    cipher_client_end2end = PKCS1_OAEP.new(client_public_key)
-                    encrypted = cipher_client_end2end.encrypt(public_key)
-                    payload = {
-                        'command': "exchange_key2",
-                        'sender': user_name,
-                        'receiver': data["sender"],
-                        'DH-Param-private-key1': data["DH-Param-private-key1"],
-                        'DH-Param-public-key2-encrypted': encrypted
-                    }
-                    json_payload = json.dumps(payload).encode()
-                    secure_send_message(client_socket, cipher_client, json_payload)
-                elif received_type == "exchange_key3":
-                    public_key = data['public_key']
-                    print(public_key)
                 elif received_type == "end2end":
                     sender = data["sender"]
-                    with open("session_key.key", "rb") as file:
-                        session_key = file.read()
-                    cipher = AES.new(session_key, AES.MODE_ECB)
-                    decrypted_data = unpad(cipher.decrypt(client_socket.recv(1024)), AES.block_size)
+                    session_key = session_keys[sender]
+                    derived_key = HKDF(
+                        algorithm=hashes.SHA256(),
+                        length=32,
+                        salt=None,
+                        info=b'session_key',
+                    ).derive(session_key)
+                    cipher = AES.new(derived_key, AES.MODE_ECB)
+                    decrypted_data = unpad(cipher.decrypt(client_socket.recv(65536)), AES.block_size)
                     decrypted_json = json.loads(decrypted_data.decode('utf-8'))
                     print(decrypted_json)
                     save_message_to_archive(decrypted_json, sender)
+                    time.sleep(0.5)
+                    rcv_sign = client_socket.recv(65536)
+                    is_valid = verifier[sender].verify(SHA256.new(decrypted_data), rcv_sign)
+                    if is_valid:
+                        print("Signature is valid. The message was signed by Alice.")
+                    else:
+                        print("Signature is invalid. The message may have been tampered with or not signed by Alice.")
                     # Update:
                     # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
                         # Valid Message
                     print(f"Received message from {sender}:", decrypted_json['message'])
                 elif received_type == "DH_2":
+                    print("here")
                     sender = data["sender"]
-                    data = json.loads(cipher_client.decrypt(client_socket.recv(2048)).decode())
+                    data = json.loads(cipher_client.decrypt(client_socket.recv(65536)).decode())
+
                     # todo check mac and cert
-                    public_numbers = dh.DHPublicNumbers(data['pub_key_dh'], parameters.parameter_numbers())
-                    reconstructed_public_key = public_numbers.public_key()
                     dh_private_key, parameters = private_DH_keys[sender]
                     public_numbers = dh.DHPublicNumbers(data['pub_key_dh'], parameters.parameter_numbers())
                     reconstructed_public_key = public_numbers.public_key()
+                    public_numbers = dh.DHPublicNumbers(data['pub_key_dh'], parameters.parameter_numbers())
+                    reconstructed_public_key = public_numbers.public_key()
+                    print("here2")
                     session_key = dh_private_key.exchange(reconstructed_public_key)
                     session_keys[sender] = session_key
+                    print(session_key)
+                    
+                    sender_public_key = RSA.import_key(client_socket.recv(65536))
+                    verifier[sender] = PKCS1_v1_5.new(sender_public_key)
+                    cipher = PKCS1_OAEP.new(sender_public_key)
+                    cipher_end2end_public_key[sender] = cipher
                     print(f"DH key agreement with {sender} is established.")
                 elif received_type == "DH_1":
                     pn = dh.DHParameterNumbers(data['root'], data['generator'])
@@ -313,9 +351,14 @@ def client_program(user):
                     session_key = my_dh_private_key.exchange(reconstructed_public_key)
                     sender = data['message'].split(",")[0]
                     session_keys[sender] = session_key
+                    
+                    # sender_public_key = RSA.import_key(data["pub_key_RSA_sender"].encode())
+                    sender_public_key = RSA.import_key(client_socket.recv(65536))
+                    verifier[sender] = PKCS1_v1_5.new(sender_public_key)
 
-                    sender_public_key = RSA.import_key(data["pub_key_RSA_sender"].encode())
                     cipher = PKCS1_OAEP.new(sender_public_key)
+                    cipher_end2end_public_key[sender] = cipher
+                    
                     data = {
                         'command': "DH_2",
                         'message': f"{user_name},{sender}"
@@ -329,6 +372,8 @@ def client_program(user):
                     }
                     json_bytes = json.dumps(json_message).encode('utf-8')
                     client_socket.send(cipher.encrypt(json_bytes))
+                else:
+                    print("kh", data)
             else:
                 print('HMAC verification failed!')
 
