@@ -13,6 +13,7 @@ from Crypto.Util.Padding import pad, unpad
 import hashlib
 import sys
 import time
+import random
 
 def generate_pub_prv_key(user):
     global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY
@@ -66,6 +67,7 @@ CERT = "client"
 signer = None
 verifier = {}
 cipher_end2end_public_key = {}
+tcp_seq_num = {}
 
 # enerate_pub_prv_key(sys.argv[1])
 load_pub_prv_key(sys.argv[1])
@@ -186,13 +188,17 @@ def client_program(user):
                 generator = parameters.parameter_numbers().g
                 public_key_value = public_key_class.public_numbers().y
                 cert = CERT
+                if receiver not in tcp_seq_num:
+                    tcp_seq_num[receiver] = {}
+                tcp_seq_num[receiver]["receiver"] = random.randint(0, 100000)
                 data = {
                     'command': "DH_1",
                     'message': user_name + "," + receiver,
                     'root': root,
                     'generator': generator,
                     'pub_key_dh_sender': public_key_value,
-                    'cert': cert
+                    'cert': cert,
+                    'tcp_num': tcp_seq_num[receiver]["receiver"]
                 }
             elif command == "message":
                 print("Enter recipient:")
@@ -224,9 +230,10 @@ def client_program(user):
                 json_message = {
                     "message": message,
                     "sender": user_name,
-                    "tcp_seq_num": 1, # update later
+                    "tcp_seq_num": tcp_seq_num[receiver]["send"], # update later
                     "mac": 1 # update later
                 }
+                tcp_seq_num[receiver]["send"] += 1
                 save_message_to_archive(json_message, receiver)
                 json_bytes = json.dumps(json_message).encode('utf-8')
                 derived_key = HKDF(
@@ -316,6 +323,11 @@ def client_program(user):
                         print("Signature is valid. The message was signed by Alice.")
                     else:
                         print("Signature is invalid. The message may have been tampered with or not signed by Alice.")
+                    if decrypted_json['tcp_seq_num'] == tcp_seq_num[sender]["receive"]:
+                        print("The message is New.")
+                        tcp_seq_num[sender]["receive"] += 1
+                    else:
+                        print("The message is not New.")
                     # Update:
                     # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
                         # Valid Message
@@ -324,7 +336,7 @@ def client_program(user):
                     print("here")
                     sender = data["sender"]
                     data = json.loads(cipher_client.decrypt(client_socket.recv(65536)).decode())
-
+                    
                     # todo check mac and cert
                     dh_private_key, parameters = private_DH_keys[sender]
                     public_numbers = dh.DHPublicNumbers(data['pub_key_dh'], parameters.parameter_numbers())
@@ -335,7 +347,8 @@ def client_program(user):
                     session_key = dh_private_key.exchange(reconstructed_public_key)
                     session_keys[sender] = session_key
                     print(session_key)
-                    
+                    tcp_seq_num[sender]["send"] = data['tcp_num']
+
                     sender_public_key = RSA.import_key(client_socket.recv(65536))
                     verifier[sender] = PKCS1_v1_5.new(sender_public_key)
                     cipher = PKCS1_OAEP.new(sender_public_key)
@@ -351,7 +364,11 @@ def client_program(user):
                     session_key = my_dh_private_key.exchange(reconstructed_public_key)
                     sender = data['message'].split(",")[0]
                     session_keys[sender] = session_key
-                    
+                    if sender not in tcp_seq_num:
+                        tcp_seq_num[sender] = {}
+                    tcp_seq_num[sender]["send"] = data['tcp_num']
+                    tcp_seq_num[sender]["receive"] = random.randint(0, 100000)
+
                     # sender_public_key = RSA.import_key(data["pub_key_RSA_sender"].encode())
                     sender_public_key = RSA.import_key(client_socket.recv(65536))
                     verifier[sender] = PKCS1_v1_5.new(sender_public_key)
@@ -368,6 +385,7 @@ def client_program(user):
                     json_message = {
                         "cert": cert,
                         "pub_key_dh": dh_public_key.public_numbers().y,
+                        "tcp_num": tcp_seq_num[sender]["receive"],
                         "mac": 1 # update later encrypt sth with private key and send
                     }
                     json_bytes = json.dumps(json_message).encode('utf-8')
