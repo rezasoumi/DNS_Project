@@ -173,7 +173,7 @@ def client_program(user):
 
         while True:
             command = input()
-            data = None
+            data, message = None, ""
 
             if command == "exit":
                 client_socket.send("exit".encode())
@@ -184,14 +184,17 @@ def client_program(user):
             elif command == "online-users":
                 message = user_name
             elif command == "history-chat":
-                print("Show history chat with user:")
+                print("Enter username or group_name to show history chat:")
                 username = input()
                 messages = read_messages_from_archive(username)
                 hist_chat = ""
                 print("messages:", messages)
-                print("archive:", archive)
+                print(len(messages))
                 for m in messages:
-                    hist_chat += f"history chat with {username}:\n" + m["sender"] + ": " + m["message"]
+                    if "group_name" in m:
+                        hist_chat += f"Group {m['group_name']} - {m['sender']}: " + m['message'] + "\n"
+                    else:
+                        hist_chat += f"history chat with {username}:\n" + m["sender"] + ": " + m["message"]
                 print(hist_chat)
                 continue
             elif command == "register":
@@ -352,6 +355,7 @@ def client_program(user):
                     "mac": 1 # update later
                 }
                 print(json_message)
+                save_message_to_archive({'message': message, 'sender': user_name, 'group_name': group_name}, group_name)
                 tcp_seq_num[group_name] += 1
                 json_bytes = json.dumps(json_message).encode('utf-8')
                 encrypted_data = cipher.encrypt(pad(json_bytes, AES.block_size))
@@ -456,6 +460,12 @@ def client_program(user):
                     if tcp_seq_num[group_name] == decrypted_json['tcp_seq_num']:
                         tcp_seq_num[group_name] += 1
                         print(f"Group {group_name} - {sender}:", decrypted_json['message'])
+                        data = {
+                            'message': decrypted_json['message'],
+                            'sender': sender,
+                            'group_name': group_name
+                        }
+                        save_message_to_archive(data, group_name)
                     else:
                         print(f"Attacker tried to send old message to group {group_name}.")
                 elif received_type == "create_group":
