@@ -67,6 +67,8 @@ bob_public_key = bob_private_key.public_key()
 reza_private_key = parameters.generate_private_key()
 reza_public_key = reza_private_key.public_key()
 
+print(reza_private_key.private_numbers().x)
+print(reza_private_key.public_key().public_numbers())
 # print(type(bob_private_key.exchange(alice_public_key)))
 # print(int.from_bytes(bob_private_key.exchange(alice_public_key), byteorder='big'))
 
