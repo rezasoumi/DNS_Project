@@ -73,13 +73,6 @@ groups = {}
 # generate_pub_prv_key(sys.argv[1], 2048)
 load_pub_prv_key(sys.argv[1])
 
-def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , sender):
-    data = {
-        'command': 'connect2',
-        'message': receiver + ',' + sender
-    }
-    secure_send_message(client_socket, cipher_server, data)
-
 def secure_send_message(conn, cipher, data):
     data['tcp_seq_num'] = tcp_seq_num["server"]["send"]
     tcp_seq_num["server"]["send"] += 1
@@ -237,13 +230,11 @@ def client_program(user):
                     'cert': cert,
                     'tcp_num': tcp_seq_num[receiver]["receive"]
                 }
-            elif command == "message":
+            elif command == "send_to_offline":
                 print("Enter recipient:")
                 receiver = input()
                 if receiver in session_keys.keys():
                     session_key  = session_keys[receiver]
-                else:
-                    run_session_key_agreement_protocol(client_socket, cipher_server, receiver , user_name)
                 print("Enter message:")
                 message = input()
                 message = f"{user_name},{receiver},{message}"
@@ -409,6 +400,9 @@ def client_program(user):
             if hmac.compare_digest(received_hmac, hmac_digest):
                 if received_type == "success" or received_type == "failure":
                     print('Received message:', data['message'])
+                elif received_type == "send_to_offline":
+                    print(f"Received message from {data['sender']}: ", data['message'])
+                    save_message_to_archive(data, data['sender'])
                 elif received_type == "end2end":
                     sender = data["sender"]
                     session_key = session_keys[sender]
@@ -440,7 +434,7 @@ def client_program(user):
                     # Update:
                     # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
                         # Valid Message
-                    print(f"Received message from {sender}:", decrypted_json['message'])
+                    print(f"Received message from {sender}: ", decrypted_json['message'])
                 elif received_type == "send_group_message":
                     sender, group_name = data['sender'], data['message']
                     session_key = session_keys[group_name]

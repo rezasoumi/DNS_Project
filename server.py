@@ -59,6 +59,7 @@ SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY = None, None
 AES_KEY_PASSWORD = b'ServerPrivateKey'  # Private key for encryption
 verifier = None
 tcp_seq_num = {}
+offline_messages = {}
 
 GENERATE_PUB_PRV_KEY_RSA = 0 # will be 1 for running again and generate new pair of private/public RSA server key
 if GENERATE_PUB_PRV_KEY_RSA:
@@ -183,10 +184,6 @@ def handle_client(conn, client_address):
         # else:
         #     print('HMAC verification failed!')
         #     continue
-        
-        if command == "exchange_key2":
-            #TODO
-            print()
 
         print(data)
         content = data["message"]
@@ -215,12 +212,31 @@ def handle_client(conn, client_address):
                     "public_key": client_public_key,
                     "certificate": certificate_client
                 }
+                if username not in offline_messages:
+                    offline_messages[username] = []
+                else:
+                    for m in offline_messages[username]:
+                        secure_send_message(conn, cipher_client, m)
+                        time.sleep(0.5)
             else:
                 response = {"type": "fail", "message": "Invalid username or password. Please try again."}
         elif command == "logout":
             username = content
             connected_clients.get(username, {})["conn"] = None
             response = {"type": "success", "message": "Logout successful. Goodby, {}!".format(username)}
+        elif command == "send_to_offline":
+            sender, receiver, message = content.split(",", 2)
+            if sender in connected_clients:
+                receiver_cipher = connected_clients[receiver]["cipher"]
+                data = {
+                    "type": command,
+                    "sender": sender,
+                    "message": message
+                }
+                offline_messages[receiver].append(data)
+                response = {"type": "success", "message": f"Message will send to {receiver}!"}
+            else:
+                response = {"type": "fail", "message": f"Server cannot handle this."}
         elif command == "DH_1": # Diffie-Hellman
             sender, receiver = content.split(",")
             if sender in connected_clients and receiver in connected_clients:
