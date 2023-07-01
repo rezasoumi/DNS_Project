@@ -128,15 +128,30 @@ def exchange_public_key(conn, client_address):
 
     return cipher_server, cipher_client, client_public_key, certificate_client
 
+def get_user_name(conn):
+    for key, value in connected_clients.items():
+        if conn == value['conn']:
+            return key
+    return None
+
 def handle_client(conn, client_address):
     cipher_server = None
     while cipher_server == None:
         cipher_server, cipher_client, client_public_key, certificate_client = exchange_public_key(conn, client_address)
 
     while True:
+        print(f"client: {get_user_name(conn)}")
+        
         rcv_data = conn.recv(65536)
         time.sleep(0.2)
-        rcv_sign = conn.recv(65536)
+        print("yes?")
+        #print(json.loads(cipher_server.decrypt(rcv_data).decode()))
+        try:
+            d = cipher_server.decrypt(rcv_data).decode()
+        except:
+            continue
+        rcv_sign = conn.recv(65536) 
+        print("no?")
         #try:
         decrypted_data = cipher_server.decrypt(rcv_data)
         data = json.loads(decrypted_data.decode())
@@ -173,6 +188,7 @@ def handle_client(conn, client_address):
             #TODO
             print()
 
+        print(data)
         content = data["message"]
         
         if command == "online-users":
@@ -278,7 +294,7 @@ def handle_client(conn, client_address):
             group_name, username, new_member = content.split(",", 2)
             if group_name in groups and username in groups[group_name]["admins"] and new_member in connected_clients:
                 groups[group_name]["members"].append(new_member)
-
+                print("1.")
                 conn_receiver, cipher_receiver = connected_clients[new_member]["conn"], connected_clients[new_member]["cipher"]
                 response = {
                     'type': "add_to_group", 
@@ -286,56 +302,73 @@ def handle_client(conn, client_address):
                     'root': groups[group_name]['parameters'].parameter_numbers().p,
                     'generator': groups[group_name]['parameters'].parameter_numbers().g
                 }
+                print("2")
                 secure_send_message(conn_receiver, cipher_receiver, response)
                 print("sent add_to_group message")
 
                 server_dh_pub_key_value = data['server_dh_pub_key_value']
                 parameters = groups[group_name]['parameters']
+                seq_num = random.randint(0, 100000)
                 for member in groups[group_name]["members"]:
                     Y = server_dh_pub_key_value
+                    print("3.")
                     for other_member in groups[group_name]["members"]:
                         if member == other_member:
                             continue
                         # Code
                         response = {
                             'type': "circular_DH",
+                            'admin': username,
                             'group_name': group_name,
                             'Y': Y
                         }
+                        print("4.")
                         conn_receiver, cipher_receiver = connected_clients[other_member]["conn"], connected_clients[other_member]["cipher"]
                         secure_send_message(conn_receiver, cipher_receiver, response)
-                        time.sleep(0.2)
+                        time.sleep(2)
+                        # print(connected_clients[other_member])
+                        print("5.")
                         rcv_data = conn_receiver.recv(65536)
-                        time.sleep(0.2)
+                        # if json.loads(cipher_server.decrypt(rcv_data).decode())['command'] == "dummy":
+                        #     time.sleep(1)
+                        #     rcv_data = conn_receiver.recv(65536)
+                        time.sleep(2)
                         rcv_sign = conn_receiver.recv(65536)
                         # sign check verification check tcp check
                         decrypted_data = cipher_server.decrypt(rcv_data)
+                        # print(json.loads(cipher_server.decrypt(rcv_sign).decode()))
                         rcv_data = json.loads(decrypted_data.decode())
-                        
+                        print(rcv_data)
                         Y = rcv_data['Y']
                     
                     response = {
                         'type': 'end_circular_DH',
                         'group_name': group_name,
-                        'Y': Y
+                        'Y': Y,
+                        'tcp_seq_num_group': seq_num
                     }
                     member_conn = connected_clients[member]["conn"]
                     member_cipher = connected_clients[member]["cipher"]
                     secure_send_message(member_conn, member_cipher, response)
-                    print("done 1 person iteration.")
+                    time.sleep(1)
                 response = {"type": "success", "message": f"Group '{group_name}': Member {new_member} added to group"}
             else:
                 response = {"type": "fail", "message":  "You are not a member of the group or the group or username does not exist."}
         elif command == "send_group_message":
-            group_name, username, message = content.split(",", 2)
+            username, group_name = content.split(",")
+            print(0.5)
+            encrypted_message = conn.recv(65536)
             if group_name in groups and username in groups[group_name]["members"]:
                 for member in groups[group_name]["members"]:
                     if member in connected_clients and member != username:
                         member_conn = connected_clients[member]["conn"]
                         member_cipher = connected_clients[member]["cipher"]
-                        message = {"type": "success", "message": f"Group '{group_name}': message from {username}: {message}"}
-                        secure_send_message(member_conn, member_cipher, message)
-                response = {"type": "success", "message": "Message sent successfully."}
+                        response = {"type": "send_group_message", "sender": username, "message": group_name}
+                        secure_send_message(member_conn, member_cipher, response)
+                        member_conn.send(encrypted_message)
+                        # message = {"type": "success", "message": f"Group '{group_name}': message from {username}: {message}"}
+                        # secure_send_message(member_conn, member_cipher, message)
+                response = {"type": "success", "message": f"Message sent to group {group_name} successfully."}
             else:
                 response = {"type": "fail", "message": "You are not a member of the group or the group does not exist."}
         elif command == "add_group_admin":

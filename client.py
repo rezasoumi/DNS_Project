@@ -253,7 +253,6 @@ def client_program(user):
                 #    session_key = file.read()
                 print("Enter recipient:")
                 receiver = input()
-                session_key = session_keys[receiver]
                 data = {
                     'command': command,
                     'message': f"{user_name},{receiver}"
@@ -272,6 +271,7 @@ def client_program(user):
                     tcp_seq_num[receiver]["send"] = 0
                 save_message_to_archive(json_message, receiver)
                 json_bytes = json.dumps(json_message).encode('utf-8')
+                session_key = session_keys[receiver]
                 derived_key = HKDF(
                     algorithm=hashes.SHA256(),
                     length=32,
@@ -307,13 +307,37 @@ def client_program(user):
                     'message': group_name + "," + user_name + "," + new_member,
                     'server_dh_pub_key_value': dummy_dh_public_key.public_numbers().y
                 }
-                print("oohoom.")
+                print("add_group_member command sent.")
             elif command == "send_group_message":
                 print("Enter group name:")
                 group_name = input()
                 print("Enter message:")
                 message = input()
-                message = "{},{},{}".format(group_name, user_name, message)
+                data = {
+                    'command': command,
+                    'message': f"{user_name},{group_name}"
+                }
+                secure_send_message(client_socket, cipher_server, data)
+                session_key = session_keys[group_name]
+                derived_key = HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=None,
+                    info=b'session_key',
+                ).derive(session_key)
+                cipher = AES.new(derived_key, AES.MODE_ECB)
+                json_message = {
+                    "message": message,
+                    "sender": user_name,
+                    "tcp_seq_num": tcp_seq_num[group_name],
+                    "mac": 1 # update later
+                }
+                print(json_message)
+                tcp_seq_num[group_name] += 1
+                json_bytes = json.dumps(json_message).encode('utf-8')
+                encrypted_data = cipher.encrypt(pad(json_bytes, AES.block_size))
+                client_socket.send(encrypted_data)
+                continue
             elif command == "add_group_admin":
                 print("Enter group name:")
                 group_name = input()
@@ -393,6 +417,25 @@ def client_program(user):
                     # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
                         # Valid Message
                     print(f"Received message from {sender}:", decrypted_json['message'])
+                elif received_type == "send_group_message":
+                    sender, group_name = data['sender'], data['message']
+                    session_key = session_keys[group_name]
+                    derived_key = HKDF(
+                        algorithm=hashes.SHA256(),
+                        length=32,
+                        salt=None,
+                        info=b'session_key',
+                    ).derive(session_key)
+                    cipher = AES.new(derived_key, AES.MODE_ECB)
+                    decrypted_data = unpad(cipher.decrypt(client_socket.recv(65536)), AES.block_size)
+                    decrypted_json = json.loads(decrypted_data.decode('utf-8'))
+                    print(decrypted_json)
+                    print(tcp_seq_num[group_name])
+                    if tcp_seq_num[group_name] == decrypted_json['tcp_seq_num']:
+                        tcp_seq_num[group_name] += 1
+                        print(f"Group {group_name} - {sender}:", decrypted_json['message'])
+                    else:
+                        print(f"Attacker tried to send old message to group {group_name}.")
                 elif received_type == "create_group":
                     pn = dh.DHParameterNumbers(data['root'], data['generator'])
                     parameters = pn.parameters()
@@ -416,29 +459,38 @@ def client_program(user):
                     parameters = groups[group_name]['parameters']
                     private_key = groups[group_name]['prv_dh_key']
                     session_key_incomplete = private_key.exchange(public_key)
-                    print(1.)
+                    print(1)
                     new_Y = dh.DHPublicNumbers(int.from_bytes(session_key_incomplete, byteorder='big'), parameters.parameter_numbers()).public_key().public_numbers().y
-                    data = {
+                    print("circular_DH")
+                    if data['admin'] != user_name:
+                        secure_send_message(client_socket, cipher_server, {'command': 'dummy', 'message': 'pass it'})
+                    print(2)
+                    data_out = {
                         'command': "circular_DH",
                         'message': 'nothing to say',
                         'Y': new_Y
                     }
-                    print("circular_DH")
-                    secure_send_message(client_socket, cipher_server, {'command': 'dummy', 'message': 'pass it'})
-                    secure_send_message(client_socket, cipher_server, data)
-                    sign = signer.sign(SHA256.new(json.dumps(data).encode()))
                     time.sleep(1)
-                    client_socket.send(sign)
-                    print("circular_DH2")
+                    secure_send_message(client_socket, cipher_server, data_out)
+                    print("circular DH2")
+                    if data['admin'] != user_name:
+                        sign = signer.sign(SHA256.new(json.dumps(data_out).encode()))
+                        time.sleep(1)
+                        client_socket.send(sign)
+                    print("circular_DH3")
                 elif received_type == "end_circular_DH":
+                    print("here")
                     group_name = data['group_name']
-                    print("wtf?")
                     parameters = groups[group_name]['parameters']
                     public_numbers = dh.DHPublicNumbers(data['Y'], parameters.parameter_numbers())
                     others_public_keys = public_numbers.public_key()
                     private_key = groups[group_name]['prv_dh_key']
                     session_key = private_key.exchange(others_public_keys)
                     groups[group_name]['session_key'] = session_key
+                    session_keys[group_name] = session_key
+                    tcp_seq_num[group_name] = data['tcp_seq_num_group']
+                    print(f"seq group num for {user_name}: ", tcp_seq_num[group_name])
+                    print(int.from_bytes(session_key, byteorder='big'))
                     print("session key updated.")
                 elif received_type == "DH_2":
                     print("here")
