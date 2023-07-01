@@ -308,6 +308,23 @@ def client_program(user):
                     'server_dh_pub_key_value': dummy_dh_public_key.public_numbers().y
                 }
                 print("add_group_member command sent.")
+            elif command == "delete_group_member":
+                print("Enter group name:")
+                group_name = input()
+                print("Enter username of member to delete:")
+                remove_member = input()
+                if group_name not in groups:
+                    print("Invalid group name.")
+                    continue
+                parameters = groups[group_name]['parameters']
+                dummy_dh_private_key = parameters.generate_private_key()
+                dummy_dh_public_key = dummy_dh_private_key.public_key()
+                data = {
+                    'command': "delete_group_member",
+                    'message': group_name + "," + user_name + "," + remove_member,
+                    'server_dh_pub_key_value': dummy_dh_public_key.public_numbers().y
+                }
+                print("delete_group_member command sent.")
             elif command == "send_group_message":
                 print("Enter group name:")
                 group_name = input()
@@ -343,7 +360,10 @@ def client_program(user):
                 group_name = input()
                 print("Enter username of member to promote as admin:")
                 new_admin = input()
-                message = "{},{},{}".format(group_name, user_name, new_admin)
+                data = {
+                    'command': "add_group_admin",
+                    'message': "{},{},{}".format(group_name, user_name, new_admin),
+                }
             else:
                 print("Invalid command. Please try again.")
                 continue
@@ -451,6 +471,8 @@ def client_program(user):
                     print("added?")
                     groups[data['group_name']] = {"parameters": parameters, "prv_dh_key": my_dh_private_key, "pub_dh_key": dh_public_key, "messages": []}
                     print(f"you added to group {data['group_name']}.")
+                elif received_type == "delete_from_group":
+                    print(f"You were kicked out of the group {data['message']} by {data['admin']}")
                 elif received_type == "circular_DH":
                     print(data)
                     group_name = data['group_name']

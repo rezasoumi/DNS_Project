@@ -354,6 +354,70 @@ def handle_client(conn, client_address):
                 response = {"type": "success", "message": f"Group '{group_name}': Member {new_member} added to group"}
             else:
                 response = {"type": "fail", "message":  "You are not a member of the group or the group or username does not exist."}
+        elif command == "delete_group_member":
+            group_name, username, remove_member = content.split(",", 2)
+            if group_name in groups and username in groups[group_name]["admins"] and remove_member not in groups[group_name]["admins"] and remove_member in connected_clients:
+                groups[group_name]["members"] = [x for x in groups[group_name]["members"] if x != remove_member]
+                print("1.")
+                conn_receiver, cipher_receiver = connected_clients[remove_member]["conn"], connected_clients[remove_member]["cipher"]
+                response = {
+                    'type': "delete_from_group", 
+                    'message': group_name,
+                    'admin': username
+                }
+                print("2")
+                secure_send_message(conn_receiver, cipher_receiver, response)
+                print("sent add_to_group message")
+
+                server_dh_pub_key_value = data['server_dh_pub_key_value']
+                parameters = groups[group_name]['parameters']
+                seq_num = random.randint(0, 100000)
+                for member in groups[group_name]["members"]:
+                    Y = server_dh_pub_key_value
+                    print("3.")
+                    for other_member in groups[group_name]["members"]:
+                        if member == other_member:
+                            continue
+                        # Code
+                        response = {
+                            'type': "circular_DH",
+                            'admin': username,
+                            'group_name': group_name,
+                            'Y': Y
+                        }
+                        print("4.")
+                        conn_receiver, cipher_receiver = connected_clients[other_member]["conn"], connected_clients[other_member]["cipher"]
+                        secure_send_message(conn_receiver, cipher_receiver, response)
+                        time.sleep(2)
+                        # print(connected_clients[other_member])
+                        print("5.")
+                        rcv_data = conn_receiver.recv(65536)
+                        # if json.loads(cipher_server.decrypt(rcv_data).decode())['command'] == "dummy":
+                        #     time.sleep(1)
+                        #     rcv_data = conn_receiver.recv(65536)
+                        time.sleep(2)
+                        rcv_sign = conn_receiver.recv(65536)
+                        # sign check verification check tcp check
+                        decrypted_data = cipher_server.decrypt(rcv_data)
+                        # print(json.loads(cipher_server.decrypt(rcv_sign).decode()))
+                        rcv_data = json.loads(decrypted_data.decode())
+                        print(rcv_data)
+                        Y = rcv_data['Y']
+                    
+                    response = {
+                        'type': 'end_circular_DH',
+                        'group_name': group_name,
+                        'Y': Y,
+                        'tcp_seq_num_group': seq_num
+                    }
+                    member_conn = connected_clients[member]["conn"]
+                    member_cipher = connected_clients[member]["cipher"]
+                    secure_send_message(member_conn, member_cipher, response)
+                    time.sleep(1)
+                response = {"type": "success", "message": f"Group '{group_name}': Member {remove_member} deleted from group {group_name}"}
+            else:
+                response = {"type": "fail", "message":  "Invalid Operation."}
+        
         elif command == "send_group_message":
             username, group_name = content.split(",")
             print(0.5)
@@ -375,10 +439,10 @@ def handle_client(conn, client_address):
             group_name, username, new_admin = content.split(",", 2)
             if (
                 group_name in groups
-                and username in groups[group_name]["admin"]
+                and username in groups[group_name]["admins"]
                 and new_admin in groups[group_name]["members"]
             ):
-                groups[group_name]["admin"].append(new_admin)
+                groups[group_name]["admins"].append(new_admin)
                 response = {"type": "success", "message":  "Member '{}' is now an admin of group '{}'.".format(new_admin, group_name)}
             else:
                 response = {"type": "fail", "message":  "You are not an admin or a member of the group or the group or username does not exist."}
