@@ -211,7 +211,8 @@ def client_program(user):
                 password = input()
                 if user != username:
                     message = "NoSuchThing" + "," + password
-                message = username + "," + password
+                else:
+                    message = username + "," + password
             elif command == "logout":
                 message = user_name
             elif command == "regenerate_rsa_key":
