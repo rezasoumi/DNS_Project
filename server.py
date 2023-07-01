@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives import serialization
 from Crypto.Signature import PKCS1_v1_5
 import time
+import random
 
 def generate_pub_prv_key():
     global SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
@@ -57,6 +58,7 @@ groups = {}
 SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY = None, None
 AES_KEY_PASSWORD = b'ServerPrivateKey'  # Private key for encryption
 verifier = None
+tcp_seq_num = {}
 
 GENERATE_PUB_PRV_KEY_RSA = 0 # will be 1 for running again and generate new pair of private/public RSA server key
 if GENERATE_PUB_PRV_KEY_RSA:
@@ -91,6 +93,10 @@ def decrypt_password(encrypted_password):
 def secure_send_message(conn, cipher, data):
     hmac_digest = hmac.new(b'', data["type"].encode(), digestmod='sha256').digest()
     data['hmac'] = hmac_digest.hex()
+    data['tcp_seq_num'] = tcp_seq_num[conn]["send"]
+    tcp_seq_num[conn]["send"] += 1
+    if tcp_seq_num[conn]["send"] > 100000:
+        tcp_seq_num[conn]["send"] = 0
     json_data = json.dumps(data).encode()
     
     conn.send(cipher.encrypt(json_data))
@@ -98,9 +104,12 @@ def secure_send_message(conn, cipher, data):
 def exchange_public_key(conn, client_address):
     global verifier
     conn.send(SERVER_PUBLIC_KEY.export_key())
+    tcp_seq_num[conn] = {}
+    tcp_seq_num[conn]["receive"] = random.randint(0, 100000)
     server_certificate = {
         'id': "server",
-        'public_key': SERVER_PUBLIC_KEY.export_key().decode()
+        'public_key': SERVER_PUBLIC_KEY.export_key().decode(),
+        'tcp_seq_num': tcp_seq_num[conn]["receive"]
     }
     server_certificate = json.dumps(server_certificate).encode()
     conn.send(server_certificate)
@@ -110,6 +119,7 @@ def exchange_public_key(conn, client_address):
     certificate_client = json.loads(conn.recv(65536).decode())
     if certificate_client["id"] == "client" and client_public_key == RSA.import_key(certificate_client["public_key"].encode()):
         print("Client {}:{} public key certificate is ok.".format(client_address[0], client_address[1]))
+        tcp_seq_num[conn]["send"] = certificate_client['tcp_seq_num']
     else:
         print("Client {}:{} public key certificate was not ok.".format(client_address[0], client_address[1]))
         return None, None, None, None
@@ -139,6 +149,13 @@ def handle_client(conn, client_address):
             print("Signature is valid. The message was signed by Alice.")
         else:
             print("Signature is invalid. The message may have been tampered with or not signed by Alice.")
+        if data['tcp_seq_num'] == tcp_seq_num[conn]["receive"]:
+                print("The message is New.")
+                tcp_seq_num[conn]["receive"] += 1
+                if tcp_seq_num[conn]["receive"] > 100000:
+                    tcp_seq_num[conn]["receive"] = 0
+        else:
+            print("The message is not New.")
         # except:
         #     a = cipher_server.decrypt(rcv_data).decode()
         #     # a = json.loads(rcv_data.decode('utf-8'))
@@ -233,6 +250,12 @@ def handle_client(conn, client_address):
             time.sleep(0.5)
             conn_receiver.send(sign_encrypted_message)
             response = {"type": "success", "message": "Message sent E2E successfully"}
+        elif command == "change_key_req":
+            client_public_key = RSA.import_key(conn.recv(65536))
+            cipher_client = PKCS1_OAEP.new(client_public_key)
+            connected_clients[content]['cipher'] = cipher_client
+            connected_clients[content]['public_key'] = client_public_key
+            response = {"type": "success", "message": "Your new public Key is valid and changed."}
         elif command == "create_group":
             group_name, username = content.split(",")
             if group_name in groups:

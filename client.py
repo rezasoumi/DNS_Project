@@ -15,10 +15,10 @@ import sys
 import time
 import random
 
-def generate_pub_prv_key(user):
+def generate_pub_prv_key(user, rsa_key_size):
     global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY
     
-    CLIENT_PRIVATE_KEY = RSA.generate(11000)
+    CLIENT_PRIVATE_KEY = RSA.generate(rsa_key_size)
     CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.publickey()
 
     password = input("Enter private key password: ")
@@ -27,11 +27,11 @@ def generate_pub_prv_key(user):
 
     ciphered_private_key = CLIENT_PRIVATE_KEY.export_key(passphrase=hashed_password, pkcs=8, protection="scryptAndAES128-CBC")
 
-    with open(f"{user}_encrypted_private_key.pem", "wb") as file:
-        file.write(ciphered_private_key)
+    with open(f"{user}_private_rsa.pem", "wb") as file:
+       file.write(ciphered_private_key)
 
-    with open(f"{user}_public_key.pem", "wb") as file:
-        file.write(CLIENT_PUBLIC_KEY.export_key())
+    with open(f"{user}_public_rsa.pem", "wb") as file:
+       file.write(CLIENT_PUBLIC_KEY.export_key())
 
 def load_pub_prv_key(user):
     global CLIENT_PRIVATE_KEY, CLIENT_PUBLIC_KEY, cipher_client_public, signer
@@ -69,7 +69,7 @@ verifier = {}
 cipher_end2end_public_key = {}
 tcp_seq_num = {}
 
-# enerate_pub_prv_key(sys.argv[1])
+# generate_pub_prv_key(sys.argv[1], 2048)
 load_pub_prv_key(sys.argv[1])
 
 def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , sender):
@@ -80,6 +80,10 @@ def run_session_key_agreement_protocol(client_socket, cipher_server, receiver , 
     secure_send_message(client_socket, cipher_server, data)
 
 def secure_send_message(conn, cipher, data):
+    data['tcp_seq_num'] = tcp_seq_num["server"]["send"]
+    tcp_seq_num["server"]["send"] += 1
+    if tcp_seq_num["server"]["send"] > 100000:
+        tcp_seq_num["server"]["send"] = 0
     json_data = json.dumps(data).encode()
     conn.send(cipher.encrypt(json_data))
     sign = signer.sign(SHA256.new(json_data))
@@ -98,6 +102,27 @@ def read_messages_from_archive(user):
     messages = [json.loads(cipher_client.decrypt(cipher).decode()) for cipher in archive[user]]
     return messages
 
+def regenrate_rsa_pair_key(conn, cipher, user):
+    global signer, archive, cipher_client, CLIENT_PRIVATE_KEY, cipher_client_public
+    change_key_req = {
+        'command': "change_key_req",
+        'message': user,
+        'cert': "client"
+    }
+    secure_send_message(conn, cipher, change_key_req)
+    data = {key: [json.loads(cipher_client.decrypt(cipher_text).decode()) for cipher_text in value] for key, value in archive.items()}
+    # data = {key: [cipher_client.decrypt(cipher_text) for cipher_text in value] for key, value in archive.items()}
+    # generate_pub_prv_key(user, 5000)
+    
+    load_pub_prv_key("reza")
+    data = {key: [cipher_client_public.encrypt(json.dumps(json_data).encode()) for json_data in value] for key, value in archive.items()}
+    # archive = {key: [cipher_client_public.encrypt(json_data) for json_data in value] for key, value in archive.items()}
+    time.sleep(0.2)
+    conn.send(CLIENT_PUBLIC_KEY.export_key())
+    cipher_client = PKCS1_OAEP.new(CLIENT_PRIVATE_KEY)
+    signer = PKCS1_v1_5.new(CLIENT_PRIVATE_KEY)
+    return 
+
 def exchange_public_key(conn):
     server_public_key = RSA.import_key(conn.recv(65536))
     certificate_server = json.loads(conn.recv(65536).decode())
@@ -106,12 +131,17 @@ def exchange_public_key(conn):
     else:
         print("Server public key certificate was not ok.")
         return None, None, None
+    tcp_seq_num["server"] = {}
+    tcp_seq_num["server"]["send"] = certificate_server['tcp_seq_num']
     cipher_server = PKCS1_OAEP.new(server_public_key)
     
     conn.send(CLIENT_PUBLIC_KEY.export_key())
+    
+    tcp_seq_num["server"]["receive"] = random.randint(0, 100000)
     client_certificate = {
         'id': "client",
-        'public_key': CLIENT_PUBLIC_KEY.export_key().decode()
+        'public_key': CLIENT_PUBLIC_KEY.export_key().decode(),
+        'tcp_seq_num': tcp_seq_num["server"]["receive"]
     }
     client_certificate = json.dumps(client_certificate).encode()
     conn.send(client_certificate)
@@ -176,6 +206,9 @@ def client_program(user):
                 message = username + "," + password
             elif command == "logout":
                 message = user_name
+            elif command == "regenerate_rsa_key":
+                regenrate_rsa_pair_key(client_socket, cipher_server, user_name)
+                continue
             elif command == "connect":
                 print("Enter ID of the person you want to communicate with:")
                 receiver = input()
@@ -190,7 +223,7 @@ def client_program(user):
                 cert = CERT
                 if receiver not in tcp_seq_num:
                     tcp_seq_num[receiver] = {}
-                tcp_seq_num[receiver]["receiver"] = random.randint(0, 100000)
+                tcp_seq_num[receiver]["receive"] = random.randint(0, 100000)
                 data = {
                     'command': "DH_1",
                     'message': user_name + "," + receiver,
@@ -198,7 +231,7 @@ def client_program(user):
                     'generator': generator,
                     'pub_key_dh_sender': public_key_value,
                     'cert': cert,
-                    'tcp_num': tcp_seq_num[receiver]["receiver"]
+                    'tcp_num': tcp_seq_num[receiver]["receive"]
                 }
             elif command == "message":
                 print("Enter recipient:")
@@ -213,7 +246,7 @@ def client_program(user):
             elif command == "end2end":
                 # Update: session key from sessionkeys[receiver]
                 # Update: tcp_seq_num_receive from tcp_seq_num[receiver]["receive"], tcp_seq_num_send from tcp_seq_num[receiver]["send"]
-                # Update: tcp_seq_num[receiver]["send"] += 1
+                # Update: tcp_seq_num[receive]["send"] += 1
                 
                 #with open("session_key.key", "rb") as file:
                 #    session_key = file.read()
@@ -234,6 +267,8 @@ def client_program(user):
                     "mac": 1 # update later
                 }
                 tcp_seq_num[receiver]["send"] += 1
+                if tcp_seq_num[receiver]["send"] > 100000:
+                    tcp_seq_num[receiver]["send"] = 0
                 save_message_to_archive(json_message, receiver)
                 json_bytes = json.dumps(json_message).encode('utf-8')
                 derived_key = HKDF(
@@ -294,7 +329,14 @@ def client_program(user):
                 decrypted_data = cipher_client.decrypt(recieved_data)
                 data = json.loads(decrypted_data.decode())
                 print("Encrypt connection")
-
+            
+            if data['tcp_seq_num'] == tcp_seq_num["server"]["receive"]:
+                print("The message is New.")
+                tcp_seq_num["server"]["receive"] += 1
+                if tcp_seq_num["server"]["receive"] > 100000:
+                    tcp_seq_num["server"]["receive"] = 0
+            else:
+                print("The message is not New.")
             received_hmac = bytes.fromhex(data['hmac'])
             received_type = data['type']
             hmac_digest = hmac.new(b'', received_type.encode(), digestmod='sha256').digest()
@@ -326,6 +368,8 @@ def client_program(user):
                     if decrypted_json['tcp_seq_num'] == tcp_seq_num[sender]["receive"]:
                         print("The message is New.")
                         tcp_seq_num[sender]["receive"] += 1
+                        if tcp_seq_num[sender]["receive"] > 100000:
+                            tcp_seq_num[sender]["receive"] = 0
                     else:
                         print("The message is not New.")
                     # Update:
