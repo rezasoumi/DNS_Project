@@ -135,7 +135,7 @@ def handle_client(conn, client_address):
 
     while True:
         rcv_data = conn.recv(65536)
-        time.sleep(0.5)
+        time.sleep(0.2)
         rcv_sign = conn.recv(65536)
         #try:
         decrypted_data = cipher_server.decrypt(rcv_data)
@@ -257,14 +257,75 @@ def handle_client(conn, client_address):
             connected_clients[content]['public_key'] = client_public_key
             response = {"type": "success", "message": "Your new public Key is valid and changed."}
         elif command == "create_group":
-            group_name, username = content.split(",")
+            username, group_name = content.split(",")
             if group_name in groups:
                 response = {"type": "fail", "message": "Group name already exists. Please choose a different group name."}
-            elif username not in users:
-                response = {"type": "fail", "message": "Invalid username. Please log in first."}
             else:
-                groups[group_name] = {"admin": [username], "members": [username]}
-                response = {"type": "success", "message": "Group '{}' created successfully.".format(group_name)}
+                parameters = dh.generate_parameters(generator=2, key_size=512)
+                groups[group_name] = {"admins": [username], "members": [username], "parameters": parameters}
+                
+                root = parameters.parameter_numbers().p
+                generator = parameters.parameter_numbers().g
+                response = {
+                    'type': "create_group",
+                    'group_name': group_name,
+                    'message': "Group '{}' created successfully.".format(group_name),
+                    'root': root,
+                    'generator': generator
+                }
+                print("Group '{}' created successfully.".format(group_name))
+        elif command == "add_group_member":
+            group_name, username, new_member = content.split(",", 2)
+            if group_name in groups and username in groups[group_name]["admins"] and new_member in connected_clients:
+                groups[group_name]["members"].append(new_member)
+
+                conn_receiver, cipher_receiver = connected_clients[new_member]["conn"], connected_clients[new_member]["cipher"]
+                response = {
+                    'type': "add_to_group", 
+                    'group_name': group_name,
+                    'root': groups[group_name]['parameters'].parameter_numbers().p,
+                    'generator': groups[group_name]['parameters'].parameter_numbers().g
+                }
+                secure_send_message(conn_receiver, cipher_receiver, response)
+                print("sent add_to_group message")
+
+                server_dh_pub_key_value = data['server_dh_pub_key_value']
+                parameters = groups[group_name]['parameters']
+                for member in groups[group_name]["members"]:
+                    Y = server_dh_pub_key_value
+                    for other_member in groups[group_name]["members"]:
+                        if member == other_member:
+                            continue
+                        # Code
+                        response = {
+                            'type': "circular_DH",
+                            'group_name': group_name,
+                            'Y': Y
+                        }
+                        conn_receiver, cipher_receiver = connected_clients[other_member]["conn"], connected_clients[other_member]["cipher"]
+                        secure_send_message(conn_receiver, cipher_receiver, response)
+                        time.sleep(0.2)
+                        rcv_data = conn_receiver.recv(65536)
+                        time.sleep(0.2)
+                        rcv_sign = conn_receiver.recv(65536)
+                        # sign check verification check tcp check
+                        decrypted_data = cipher_server.decrypt(rcv_data)
+                        rcv_data = json.loads(decrypted_data.decode())
+                        
+                        Y = rcv_data['Y']
+                    
+                    response = {
+                        'type': 'end_circular_DH',
+                        'group_name': group_name,
+                        'Y': Y
+                    }
+                    member_conn = connected_clients[member]["conn"]
+                    member_cipher = connected_clients[member]["cipher"]
+                    secure_send_message(member_conn, member_cipher, response)
+                    print("done 1 person iteration.")
+                response = {"type": "success", "message": f"Group '{group_name}': Member {new_member} added to group"}
+            else:
+                response = {"type": "fail", "message":  "You are not a member of the group or the group or username does not exist."}
         elif command == "send_group_message":
             group_name, username, message = content.split(",", 2)
             if group_name in groups and username in groups[group_name]["members"]:
@@ -277,19 +338,6 @@ def handle_client(conn, client_address):
                 response = {"type": "success", "message": "Message sent successfully."}
             else:
                 response = {"type": "fail", "message": "You are not a member of the group or the group does not exist."}
-        elif command == "add_group_member":
-            group_name, username, new_member = content.split(",", 2)
-            if group_name in groups and username in groups[group_name]["admin"] and new_member in users:
-                groups[group_name]["members"].append(new_member)
-                for member in groups[group_name]["members"]:
-                    if member in connected_clients:
-                        member_conn = connected_clients[member]["conn"]
-                        member_cipher = connected_clients[member]["cipher"]
-                        message = {"type": "success", "message": f"Group '{group_name}': Member {new_member} added to group"}
-                        secure_send_message(member_conn, member_cipher, message)
-                response = {"type": "success", "message":  "Member added successfully".format(new_member, group_name)}
-            else:
-                response = {"type": "fail", "message":  "You are not a member of the group or the group or username does not exist."}
         elif command == "add_group_admin":
             group_name, username, new_admin = content.split(",", 2)
             if (

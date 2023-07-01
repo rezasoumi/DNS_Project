@@ -68,6 +68,7 @@ signer = None
 verifier = {}
 cipher_end2end_public_key = {}
 tcp_seq_num = {}
+groups = {}
 
 # generate_pub_prv_key(sys.argv[1], 2048)
 load_pub_prv_key(sys.argv[1])
@@ -87,7 +88,7 @@ def secure_send_message(conn, cipher, data):
     json_data = json.dumps(data).encode()
     conn.send(cipher.encrypt(json_data))
     sign = signer.sign(SHA256.new(json_data))
-    time.sleep(0.5)
+    time.sleep(0.1)
     conn.send(sign)
 
 def save_message_to_archive(packet, username):
@@ -286,19 +287,33 @@ def client_program(user):
             elif command == "create_group":
                 print("Enter group name:")
                 group_name = input()
-                message = "{},{}".format(group_name, user_name)
+                data = {
+                    'command': "create_group",
+                    'message': user_name + "," + group_name
+                }
+            elif command == "add_group_member":
+                print("Enter group name:")
+                group_name = input()
+                print("Enter username of member to add:")
+                new_member = input()
+                if group_name not in groups:
+                    print("Invalid group name.")
+                    continue
+                parameters = groups[group_name]['parameters']
+                dummy_dh_private_key = parameters.generate_private_key()
+                dummy_dh_public_key = dummy_dh_private_key.public_key()
+                data = {
+                    'command': "add_group_member",
+                    'message': group_name + "," + user_name + "," + new_member,
+                    'server_dh_pub_key_value': dummy_dh_public_key.public_numbers().y
+                }
+                print("oohoom.")
             elif command == "send_group_message":
                 print("Enter group name:")
                 group_name = input()
                 print("Enter message:")
                 message = input()
                 message = "{},{},{}".format(group_name, user_name, message)
-            elif command == "add_group_member":
-                print("Enter group name:")
-                group_name = input()
-                print("Enter username of member to add:")
-                new_member = input()
-                message = "{},{},{}".format(group_name, user_name, new_member)
             elif command == "add_group_admin":
                 print("Enter group name:")
                 group_name = input()
@@ -376,6 +391,47 @@ def client_program(user):
                     # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
                         # Valid Message
                     print(f"Received message from {sender}:", decrypted_json['message'])
+                elif received_type == "create_group":
+                    pn = dh.DHParameterNumbers(data['root'], data['generator'])
+                    parameters = pn.parameters()
+                    my_dh_private_key = parameters.generate_private_key()
+                    dh_public_key = my_dh_private_key.public_key()
+                    groups[data['group_name']] = {"parameters": parameters, "prv_dh_key": my_dh_private_key, "pub_dh_key": dh_public_key, "messages": []}
+                    print(data['message'])
+                elif received_type == "add_to_group":
+                    pn = dh.DHParameterNumbers(data['root'], data['generator'])
+                    parameters = pn.parameters()
+                    my_dh_private_key = parameters.generate_private_key()
+                    dh_public_key = my_dh_private_key.public_key()
+                    print("added?")
+                    groups[data['group_name']] = {"parameters": parameters, "prv_dh_key": my_dh_private_key, "pub_dh_key": dh_public_key, "messages": []}
+                    print(f"you added to group {data['group_name']}.")
+                elif received_type == "circular_DH":
+                    group_name = data['group_name']
+                    public_numbers = dh.DHPublicNumbers(data['Y'], parameters.parameter_numbers())
+                    public_key = public_numbers.public_key()
+                    parameters = groups[group_name]['parameters']
+                    private_key = groups[group_name]['prv_dh_key']
+                    session_key_incomplete = private_key.exchange(public_key)
+                    new_Y = dh.DHPublicNumbers(int.from_bytes(session_key_incomplete, byteorder='big'), parameters.parameter_numbers()).public_key().public_numbers().y
+                    data = {
+                        'command': "circular_DH",
+                        'message': 'nothing to say',
+                        'Y': new_Y
+                    }
+                    print("circular_DH")
+                    secure_send_message(client_socket, cipher_server, data)
+                    print("circular_DH2")
+                elif received_type == "end_circular_DH":
+                    group_name = data['group_name']
+                    print("wtf?")
+                    parameters = groups[group_name]['parameters']
+                    public_numbers = dh.DHPublicNumbers(data['Y'], parameters.parameter_numbers())
+                    others_public_keys = public_numbers.public_key()
+                    private_key = groups[group_name]['prv_dh_key']
+                    session_key = private_key.exchange(others_public_keys)
+                    groups[group_name]['session_key'] = session_key
+                    print("session key updated.")
                 elif received_type == "DH_2":
                     print("here")
                     sender = data["sender"]
