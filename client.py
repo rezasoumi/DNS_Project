@@ -88,7 +88,7 @@ def secure_send_message(conn, cipher, data):
     json_data = json.dumps(data).encode()
     conn.send(cipher.encrypt(json_data))
     sign = signer.sign(SHA256.new(json_data))
-    time.sleep(0.1)
+    time.sleep(2)
     conn.send(sign)
 
 def save_message_to_archive(packet, username):
@@ -345,6 +345,8 @@ def client_program(user):
                 data = json.loads(decrypted_data.decode())
                 print("Encrypt connection")
             
+            print(data)
+
             if data['tcp_seq_num'] == tcp_seq_num["server"]["receive"]:
                 print("The message is New.")
                 tcp_seq_num["server"]["receive"] += 1
@@ -407,12 +409,14 @@ def client_program(user):
                     groups[data['group_name']] = {"parameters": parameters, "prv_dh_key": my_dh_private_key, "pub_dh_key": dh_public_key, "messages": []}
                     print(f"you added to group {data['group_name']}.")
                 elif received_type == "circular_DH":
+                    print(data)
                     group_name = data['group_name']
                     public_numbers = dh.DHPublicNumbers(data['Y'], parameters.parameter_numbers())
                     public_key = public_numbers.public_key()
                     parameters = groups[group_name]['parameters']
                     private_key = groups[group_name]['prv_dh_key']
                     session_key_incomplete = private_key.exchange(public_key)
+                    print(1.)
                     new_Y = dh.DHPublicNumbers(int.from_bytes(session_key_incomplete, byteorder='big'), parameters.parameter_numbers()).public_key().public_numbers().y
                     data = {
                         'command': "circular_DH",
@@ -420,7 +424,11 @@ def client_program(user):
                         'Y': new_Y
                     }
                     print("circular_DH")
+                    secure_send_message(client_socket, cipher_server, {'command': 'dummy', 'message': 'pass it'})
                     secure_send_message(client_socket, cipher_server, data)
+                    sign = signer.sign(SHA256.new(json.dumps(data).encode()))
+                    time.sleep(1)
+                    client_socket.send(sign)
                     print("circular_DH2")
                 elif received_type == "end_circular_DH":
                     group_name = data['group_name']
