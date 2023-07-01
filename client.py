@@ -209,6 +209,8 @@ def client_program(user):
                 user_name = username
                 print("Enter password:")
                 password = input()
+                if user != username:
+                    message = "NoSuchThing" + "," + password
                 message = username + "," + password
             elif command == "logout":
                 message = user_name

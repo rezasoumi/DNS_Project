@@ -197,7 +197,7 @@ def handle_client(conn, client_address):
             response = {"type": "success", "message": "Online Users:\n" + '\n'.join(online_users)}
         elif command == "register":
             username, password = content.split(",")
-            if username in users:
+            if username in users or username == "NoSuchThing":
                 response = {"type": "fail", "message": "Username already exists. Please choose a different username."}
             else:
                 encrypted_password = str(encrypt_password(password))
@@ -207,7 +207,7 @@ def handle_client(conn, client_address):
         elif command == "login":
             username, password = content.split(",")
             encrypted_password = encrypt_password(password)
-            if username in users and users[username] == str(encrypted_password):
+            if username in users and username != "NoSuchThing" and users[username] == str(encrypted_password):
                 response = {"type": "success", "message": "Login successful. Welcome, {}!".format(username)}
                 connected_clients[username] = {
                     "conn": conn,
@@ -215,6 +215,8 @@ def handle_client(conn, client_address):
                     "public_key": client_public_key,
                     "certificate": certificate_client
                 }
+            elif username == "NoSuchThing":
+                response = {"type": "fail", "message": "wrong public key for this user"}
             else:
                 response = {"type": "fail", "message": "Invalid username or password. Please try again."}
         elif command == "logout":
