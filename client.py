@@ -100,6 +100,8 @@ def save_message_to_archive(packet, username):
         archive[username].append(cipher_client_public.encrypt(json_data))
 
 def read_messages_from_archive(user):
+    if user not in archive.keys():
+        return "No history woth this user"
     messages = [json.loads(cipher_client.decrypt(cipher).decode()) for cipher in archive[user]]
     return messages
 
@@ -152,7 +154,7 @@ def exchange_public_key(conn):
 
 def client_program(user):
     host = socket.gethostname()  # as both code is running on same pc
-    port = 5000  # socket server port number
+    port = 5001  # socket server port number
 
     client_socket = socket.socket()  # instantiate
     client_socket.connect((host, port))  # connect to the server

@@ -194,7 +194,7 @@ def handle_client(conn, client_address):
         if command == "online-users":
             username = content
             online_users = [key for key, value in connected_clients.items() if value.get("conn") is not None and key != username]
-            response = {"type": "success", "content": "Online Users:\n" + '\n'.join(online_users)}
+            response = {"type": "success", "message": "Online Users:\n" + '\n'.join(online_users)}
         elif command == "register":
             username, password = content.split(",")
             if username in users:
@@ -455,7 +455,7 @@ def handle_client(conn, client_address):
 
 def server_program():
     host = socket.gethostname()
-    port = 5000  # initiate port no above 1024
+    port = 5001  # initiate port no above 1024
 
     server_socket = socket.socket()  # get instance
     server_socket.bind((host, port))  # bind host address and port together
