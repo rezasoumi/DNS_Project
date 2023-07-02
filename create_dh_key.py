@@ -24,10 +24,10 @@ def generate_pub_prv_key():
 
     ciphered_private_key = SERVER_PRIVATE_KEY.export_key(passphrase=hashed_password, pkcs=8, protection="scryptAndAES128-CBC")
 
-    with open("pourya_private_rsa.pem", "wb") as file:
+    with open("test_private_rsa.pem", "wb") as file:
         file.write(ciphered_private_key)
 
-    with open("pourya_public_rsa.pem", "wb") as file:
+    with open("test_public_rsa.pem", "wb") as file:
         file.write(SERVER_PUBLIC_KEY.export_key())
 
 def load_pub_prv_key():
