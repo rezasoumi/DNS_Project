@@ -146,18 +146,14 @@ def handle_client(conn, client_address):
             
             rcv_data = conn.recv(65536)
             time.sleep(0.2)
-            #print(json.loads(cipher_server.decrypt(rcv_data).decode()))
             try:
                 d = cipher_server.decrypt(rcv_data).decode()
             except:
                 continue
             rcv_sign = conn.recv(65536) 
-            #try:
             decrypted_data = cipher_server.decrypt(rcv_data)
             data = json.loads(decrypted_data.decode())
             command = data['command']
-            # hmac_digest = hmac.new(b'', received_command.encode(), digestmod='sha256').digest()
-            # sign = json.loads(cipher_client.decrypt(rcv_sign).decode())
             
             is_valid = verifier.verify(SHA256.new(decrypted_data), rcv_sign)
             if is_valid:
@@ -329,9 +325,9 @@ def handle_client(conn, client_address):
                             }
                             conn_receiver, cipher_receiver = connected_clients[other_member]["conn"], connected_clients[other_member]["cipher"]
                             secure_send_message(conn_receiver, cipher_receiver, response)
-                            time.sleep(2)
+                            time.sleep(1)
                             rcv_data = conn_receiver.recv(65536)
-                            time.sleep(2)
+                            time.sleep(1)
                             rcv_sign = conn_receiver.recv(65536)
                             # sign check verification check tcp check
                             decrypted_data = cipher_server.decrypt(rcv_data)

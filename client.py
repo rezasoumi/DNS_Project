@@ -248,12 +248,6 @@ def client_program(user):
                     message = input()
                     message = f"{user_name},{receiver},{message}"
                 elif command == "end2end":
-                    # Update: session key from sessionkeys[receiver]
-                    # Update: tcp_seq_num_receive from tcp_seq_num[receiver]["receive"], tcp_seq_num_send from tcp_seq_num[receiver]["send"]
-                    # Update: tcp_seq_num[receive]["send"] += 1
-                    
-                    #with open("session_key.key", "rb") as file:
-                    #    session_key = file.read()
                     print("Enter recipient:")
                     receiver = input()
                     if receiver not in tcp_seq_num:
@@ -266,15 +260,14 @@ def client_program(user):
                         'command': command,
                         'message': f"{user_name},{receiver}"
                     }
-                    time.sleep(0.2)
-                    secure_send_message(client_socket, cipher_server, data)
+                    # time.sleep(0.2)
                     print("Enter message:")
+                    secure_send_message(client_socket, cipher_server, data)
                     message = input()
                     json_message = {
                         "message": message,
                         "sender": user_name,
-                        "tcp_seq_num": tcp_seq_num[receiver]["send"], # update later
-                        "mac": 1 # update later
+                        "tcp_seq_num": tcp_seq_num[receiver]["send"],
                     }
                     tcp_seq_num[receiver]["send"] += 1
                     if tcp_seq_num[receiver]["send"] > 100000:
@@ -356,8 +349,7 @@ def client_program(user):
                     json_message = {
                         "message": message,
                         "sender": user_name,
-                        "tcp_seq_num": tcp_seq_num[group_name],
-                        "mac": 1 # update later
+                        "tcp_seq_num": tcp_seq_num[group_name]
                     }
                     save_message_to_archive({'message': message, 'sender': user_name, 'group_name': group_name}, group_name)
                     tcp_seq_num[group_name] += 1
@@ -449,9 +441,6 @@ def client_program(user):
                         else:
                             print("The message is not New. delete it.")
                             # continue
-                        # Update:
-                        # if decrypted_json["tcp_seq_num"] == tcp_seq_num[sender]["receive"]:
-                            # Valid Message
                         print(f"Received message from {sender}: ", decrypted_json['message'])
                     elif received_type == "send_group_message":
                         sender, group_name = data['sender'], data['message']
@@ -558,7 +547,6 @@ def client_program(user):
                         tcp_seq_num[sender]["send"] = data['tcp_num']
                         tcp_seq_num[sender]["receive"] = random.randint(0, 100000)
 
-                        # sender_public_key = RSA.import_key(data["pub_key_RSA_sender"].encode())
                         sender_public_key = RSA.import_key(client_socket.recv(65536))
                         verifier[sender] = PKCS1_v1_5.new(sender_public_key)
 
@@ -586,7 +574,6 @@ def client_program(user):
                     print('HMAC verification failed!')
             except:
                 continue
-            
     send_thread = threading.Thread(target=send_message)
     receive_thread = threading.Thread(target=receive_message)
 
