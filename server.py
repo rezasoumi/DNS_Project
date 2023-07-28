@@ -30,10 +30,10 @@ def generate_pub_prv_key():
 
     ciphered_private_key = SERVER_PRIVATE_KEY.export_key(passphrase=hashed_password, pkcs=8, protection="scryptAndAES128-CBC")
 
-    with open("encrypted_private_key.pem", "wb") as file:
+    with open("Keys/encrypted_private_key.pem", "wb") as file:
         file.write(ciphered_private_key)
 
-    with open("public_key.pem", "wb") as file:
+    with open("Keys/public_key.pem", "wb") as file:
         file.write(SERVER_PUBLIC_KEY.export_key())
 
 def load_pub_prv_key():
@@ -43,12 +43,12 @@ def load_pub_prv_key():
     password = input("Enter private key password: ")
     hashed_password = hashlib.sha256(password.encode()).digest()
     
-    with open("encrypted_private_key.pem", "rb") as file:
+    with open("Keys/encrypted_private_key.pem", "rb") as file:
         encrypted_data = file.read()
 
     SERVER_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
 
-    with open("public_key.pem", "rb") as file:
+    with open("Keys/public_key.pem", "rb") as file:
         public_key = file.read()
         SERVER_PUBLIC_KEY = RSA.import_key(public_key)
 

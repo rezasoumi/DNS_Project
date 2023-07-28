@@ -27,10 +27,10 @@ def generate_pub_prv_key(user, rsa_key_size):
 
     ciphered_private_key = CLIENT_PRIVATE_KEY.export_key(passphrase=hashed_password, pkcs=8, protection="scryptAndAES128-CBC")
 
-    with open(f"{user}_private_rsa.pem", "wb") as file:
+    with open(f"Keys/{user}_private_rsa.pem", "wb") as file:
        file.write(ciphered_private_key)
 
-    with open(f"{user}_public_rsa.pem", "wb") as file:
+    with open(f"Keys/{user}_public_rsa.pem", "wb") as file:
        file.write(CLIENT_PUBLIC_KEY.export_key())
 
 def load_pub_prv_key(user):
@@ -39,14 +39,14 @@ def load_pub_prv_key(user):
     password = input("Enter private key password: ")
     hashed_password = hashlib.sha256(password.encode()).digest()
 
-    # print(f"{user}_private_rsa.pem")
-    with open(f"{user}_private_rsa.pem", "rb") as file:
+    # print(f"Keys/{user}_private_rsa.pem")
+    with open(f"Keys/{user}_private_rsa.pem", "rb") as file:
         encrypted_data = file.read()
 
     CLIENT_PRIVATE_KEY = RSA.import_key(encrypted_data, passphrase=hashed_password)
     
-    # print(f"{user}_public_rsa.pem")
-    with open(f"{user}_public_rsa.pem", "rb") as file:
+    # print(f"Keys/{user}_public_rsa.pem")
+    with open(f"Keys/{user}_public_rsa.pem", "rb") as file:
         public_key = file.read()
         CLIENT_PUBLIC_KEY = RSA.import_key(public_key)
 
