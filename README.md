@@ -1,6 +1,3 @@
-# DNS_Project
-project of the Data and Network Security Course of Dr. Morteza Amini
-
 # Secure Command Prompt Messenger
 
 This project is a secure messenger application designed to provide end-to-end encryption for communication between users in a command prompt environment. Users can send messages securely to each other, ensuring the confidentiality and integrity of their conversations. The application utilizes RSA and Diffie-Hellman key exchange to establish secure communication channels.
